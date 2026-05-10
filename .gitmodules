@@ -1,0 +1,3 @@
+[submodule "walrus-deploy"]
+	path = walrus-deploy
+	url = git@github.com:ankushKun/walrus-deploy.git
