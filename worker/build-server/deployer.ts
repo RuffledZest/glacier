@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync, statSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync, statSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 
@@ -19,6 +19,322 @@ export interface DeployResult {
   error?: string
   logs: string[]
 }
+
+// ───────────────────────────────────────────────────────────────
+// Helpers
+// ───────────────────────────────────────────────────────────────
+
+function totalDirSize(dir: string): number {
+  let size = 0
+  const entries = readdirSync(dir, { withFileTypes: true })
+  for (const entry of entries) {
+    const fullPath = join(dir, entry.name)
+    if (entry.isDirectory()) {
+      size += totalDirSize(fullPath)
+    } else if (entry.isFile()) {
+      size += statSync(fullPath).size
+    }
+  }
+  return size
+}
+
+function setupWallet(network: 'mainnet' | 'testnet', keystoreContent: string, suiAddress: string, logs: string[]) {
+  const suiDir = join(homedir(), '.sui', 'sui_config')
+  mkdirSync(suiDir, { recursive: true })
+
+  const keystorePath = join(suiDir, 'sui.keystore')
+  writeFileSync(keystorePath, keystoreContent, { mode: 0o600 })
+
+  const rpc = network === 'testnet'
+    ? 'https://fullnode.testnet.sui.io:443'
+    : 'https://fullnode.mainnet.sui.io:443'
+
+  const clientYaml = [
+    '---',
+    'keystore:',
+    `  File: ${keystorePath}`,
+    'envs:',
+    `  - alias: ${network}`,
+    `    rpc: "${rpc}"`,
+    '    ws: ~',
+    `active_env: ${network}`,
+    `active_address: "${suiAddress}"`,
+    '',
+  ].join('\n')
+
+  writeFileSync(join(suiDir, 'client.yaml'), clientYaml, { mode: 0o600 })
+  logs.push('Sui wallet configured')
+}
+
+async function rpcCall<T>(url: string, method: string, params: unknown[]): Promise<T> {
+  const resp = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params })
+  })
+  if (!resp.ok) {
+    throw new Error(`HTTP ${resp.status}: ${resp.statusText}`)
+  }
+  const data = await resp.json() as any
+  if (data.error) {
+    throw new Error(data.error.message || JSON.stringify(data.error))
+  }
+  return data.result as T
+}
+
+async function getBalances(address: string, rpcUrl: string, logs: string[]): Promise<{ sui: bigint; wal: bigint }> {
+  const suiResult = await rpcCall<{ totalBalance: string }>(rpcUrl, 'suix_getBalance', [address, '0x2::sui::SUI'])
+  const sui = BigInt(suiResult.totalBalance)
+
+  let wal = 0n
+  try {
+    const allBalances = await rpcCall<Array<{ coinType: string; totalBalance: string }>>(rpcUrl, 'suix_getAllBalances', [address])
+    const walEntry = allBalances.find(b =>
+      b.coinType.toLowerCase().includes('wal') ||
+      b.coinType.toLowerCase().includes('frost')
+    )
+    if (walEntry) wal = BigInt(walEntry.totalBalance)
+  } catch (err) {
+    logs.push(`Note: getAllBalances failed (wallet may be empty): ${err instanceof Error ? err.message : 'unknown'}`)
+  }
+
+  return { sui, wal }
+}
+
+async function estimateCost(
+  network: 'mainnet' | 'testnet',
+  totalBytes: number,
+  epochs: number | 'max',
+  walrusBin: string,
+  env: Record<string, string>,
+  logs: string[]
+): Promise<{ success: boolean; walNeeded: bigint; error?: string }> {
+  try {
+    const result = spawnSync(walrusBin, ['info', 'price', '--context', network], { env, encoding: 'utf-8', timeout: 30000 })
+    const output = (result.stdout || '') + '\n' + (result.stderr || '')
+
+    let pricePerMibPerEpoch = 0n
+    const patterns = [
+      /(\d+(?:\.\d+)?)\s*(?:FROST|WAL)\s+per\s+(?:MiB|MB)/i,
+      /storage\s+price[:\s]+(\d+(?:\.\d+)?)/i,
+      /price[:\s]+(\d+(?:\.\d+)?)/i,
+      /(\d+(?:\.\d+)?)\s+per\s+epoch/i,
+    ]
+
+    for (const pattern of patterns) {
+      const match = output.match(pattern)
+      if (match) {
+        const price = parseFloat(match[1])
+        pricePerMibPerEpoch = BigInt(Math.ceil(price * 1_000_000_000))
+        logs.push(`Parsed storage price: ${price} WAL per MiB per epoch`)
+        break
+      }
+    }
+
+    if (pricePerMibPerEpoch === 0n) {
+      logs.push(`Could not parse price from walrus output; using fallback.`)
+      logs.push(`Price output: ${output.slice(0, 800)}`)
+      pricePerMibPerEpoch = 10_000_000n // 0.01 WAL/MiB/epoch fallback
+    }
+
+    const sizeMib = BigInt(Math.ceil(totalBytes / (1024 * 1024)))
+    const effectiveSizeMib = sizeMib === 0n ? 1n : sizeMib
+
+    let epochCount: bigint
+    if (epochs === 'max') {
+      epochCount = 53n
+      logs.push('Using max epochs: 53')
+    } else {
+      epochCount = BigInt(epochs)
+    }
+
+    const walNeeded = effectiveSizeMib * pricePerMibPerEpoch * epochCount
+    logs.push(`Cost: ${effectiveSizeMib} MiB × ${pricePerMibPerEpoch} FROST/MiB/epoch × ${epochCount} epochs = ${walNeeded} FROST`)
+
+    return { success: true, walNeeded }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : 'unknown error'
+    logs.push(`Cost estimation failed: ${msg}`)
+    return { success: true, walNeeded: 5_000_000_000n } // 5 WAL fallback
+  }
+}
+
+async function exchangeSuiForWal(
+  amountMist: bigint,
+  walrusBin: string,
+  network: 'mainnet' | 'testnet',
+  env: Record<string, string>,
+  logs: string[]
+): Promise<{ success: boolean; error?: string }> {
+  logs.push(`Exchanging ${amountMist} MIST SUI for WAL via walrus get-wal...`)
+
+  const result = spawnSync(walrusBin, ['get-wal', '--context', network, '--amount', amountMist.toString()], {
+    env,
+    encoding: 'utf-8',
+    timeout: 120000,
+    maxBuffer: 10 * 1024 * 1024,
+  })
+
+  const stdout = result.stdout?.trim() || ''
+  const stderr = result.stderr?.trim() || ''
+
+  if (stdout) logs.push(`get-wal output: ${stdout.slice(0, 2000)}`)
+  if (stderr) logs.push(`get-wal stderr: ${stderr.slice(0, 2000)}`)
+
+  if (result.status !== 0) {
+    return { success: false, error: `get-wal exited with code ${result.status}: ${stderr || stdout || 'unknown error'}` }
+  }
+
+  logs.push('Successfully exchanged SUI for WAL')
+  return { success: true }
+}
+
+async function ensureFunds(
+  network: 'mainnet' | 'testnet',
+  distPath: string,
+  epochs: number | 'max',
+  suiKeystore: string,
+  suiAddress: string,
+  logs: string[]
+): Promise<{ sufficient: boolean; error?: string }> {
+  const rpcUrl = network === 'testnet'
+    ? 'https://fullnode.testnet.sui.io:443'
+    : 'https://fullnode.mainnet.sui.io:443'
+
+  const walrusBin = `/usr/local/bin/walrus-${network}`
+
+  const env = {
+    ...process.env as Record<string, string>,
+    HOME: process.env.HOME || '/root',
+    PATH: `${process.env.PATH}:/usr/local/bin`,
+    SUI_KEYSTORE: suiKeystore,
+    SUI_ADDRESS: suiAddress,
+    CI: 'true',
+  }
+
+  // 1. Deployment size
+  let totalBytes: number
+  try {
+    totalBytes = totalDirSize(distPath)
+    logs.push(`Deployment size: ${totalBytes} bytes (${(totalBytes / (1024 * 1024)).toFixed(4)} MiB)`)
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : 'unknown'
+    logs.push(`Failed to calculate deployment size: ${msg}`)
+    totalBytes = 0
+  }
+
+  // 2. Cost estimate
+  const costEstimate = await estimateCost(network, totalBytes, epochs, walrusBin, env, logs)
+  if (!costEstimate.success) {
+    return { sufficient: false, error: costEstimate.error }
+  }
+
+  const requiredWal = costEstimate.walNeeded * 15n / 10n // 50% buffer
+  logs.push(`Required WAL (with 50% buffer): ${requiredWal} FROST`)
+
+  // 3. Current balances
+  let balances: { sui: bigint; wal: bigint }
+  try {
+    balances = await getBalances(suiAddress, rpcUrl, logs)
+    logs.push(`Balances — SUI: ${balances.sui} MIST, WAL: ${balances.wal} FROST`)
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : 'unknown'
+    logs.push(`Balance check failed: ${msg}`)
+    return { sufficient: true } // optimistic
+  }
+
+  const MIN_SUI_FOR_GAS = 50_000_000n // 0.05 SUI
+
+  // 4. Already sufficient?
+  if (balances.wal >= requiredWal) {
+    if (balances.sui < MIN_SUI_FOR_GAS) {
+      return {
+        sufficient: false,
+        error: `Insufficient SUI for gas. Have: ${balances.sui} MIST, need at least ${MIN_SUI_FOR_GAS} MIST (0.05 SUI). Please fund your wallet.`,
+      }
+    }
+    logs.push('Sufficient WAL and SUI for deployment')
+    return { sufficient: true }
+  }
+
+  const walShortfall = requiredWal - balances.wal
+  logs.push(`WAL shortfall: ${walShortfall} FROST`)
+
+  if (network === 'mainnet') {
+    return {
+      sufficient: false,
+      error: `Insufficient WAL for mainnet deployment. Have: ${balances.wal} FROST, Need: ${requiredWal} FROST. Please acquire WAL manually.`,
+    }
+  }
+
+  // Testnet — attempt SUI → WAL exchange
+  if (balances.sui <= MIN_SUI_FOR_GAS) {
+    return {
+      sufficient: false,
+      error: `Insufficient SUI to exchange for WAL. Have: ${balances.sui} MIST, need more than ${MIN_SUI_FOR_GAS} MIST after gas reserve. Please fund with testnet SUI.`,
+    }
+  }
+
+  const maxSuiToExchange = balances.sui - MIN_SUI_FOR_GAS
+  let suiToExchange = maxSuiToExchange > 1_000_000_000n ? 1_000_000_000n : maxSuiToExchange
+  if (suiToExchange < 100_000_000n && maxSuiToExchange >= 100_000_000n) {
+    suiToExchange = 100_000_000n
+  }
+
+  if (suiToExchange <= 0n) {
+    return {
+      sufficient: false,
+      error: `Not enough SUI to exchange for WAL after gas reserve. Available: ${maxSuiToExchange} MIST.`,
+    }
+  }
+
+  logs.push(`Exchanging ${suiToExchange} MIST SUI for WAL...`)
+  const exchangeResult = await exchangeSuiForWal(suiToExchange, walrusBin, network, env, logs)
+  if (!exchangeResult.success) {
+    return {
+      sufficient: false,
+      error: `SUI→WAL exchange failed: ${exchangeResult.error}`,
+    }
+  }
+
+  // Verify post-exchange
+  try {
+    const newBalances = await getBalances(suiAddress, rpcUrl, logs)
+    logs.push(`Post-exchange — SUI: ${newBalances.sui} MIST, WAL: ${newBalances.wal} FROST`)
+
+    if (newBalances.wal >= requiredWal) {
+      if (newBalances.sui < MIN_SUI_FOR_GAS) {
+        return { sufficient: false, error: `WAL acquired but insufficient SUI remains for gas (${newBalances.sui} MIST).` }
+      }
+      logs.push('Sufficient WAL after exchange')
+      return { sufficient: true }
+    }
+
+    // Attempt second exchange
+    const remainingSui = newBalances.sui - MIN_SUI_FOR_GAS
+    if (remainingSui > 100_000_000n) {
+      logs.push(`Still short, second exchange with ${remainingSui} MIST...`)
+      const second = await exchangeSuiForWal(remainingSui, walrusBin, network, env, logs)
+      if (second.success) {
+        const finalBalances = await getBalances(suiAddress, rpcUrl, logs)
+        logs.push(`Final — SUI: ${finalBalances.sui} MIST, WAL: ${finalBalances.wal} FROST`)
+        if (finalBalances.wal >= requiredWal) return { sufficient: true }
+      }
+    }
+
+    return {
+      sufficient: false,
+      error: `Insufficient WAL even after exchange. Have: ${newBalances.wal} FROST, Need: ${requiredWal} FROST. Reduce size/epochs or fund wallet.`,
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : 'unknown'
+    return { sufficient: false, error: `Balance check after exchange failed: ${msg}` }
+  }
+}
+
+// ───────────────────────────────────────────────────────────────
+// Main deploy function
+// ───────────────────────────────────────────────────────────────
 
 export async function deployToWalrus(params: DeployParams): Promise<DeployResult> {
   const logs: string[] = []
@@ -44,11 +360,7 @@ export async function deployToWalrus(params: DeployParams): Promise<DeployResult
   let tempSitesConfig = ''
 
   try {
-    // ── Walrus CLI config (required by walrus binary called from site-builder) ──
-    // site-builder passes --context <network> to walrus, so we must write a valid
-    // MultiClientConfig with contexts + default_context. The walrus binary auto-
-    // detects network defaults (rpc_urls, exchange_objects, n_shards, etc.) when
-    // the exact system_object / staking_object IDs are provided.
+    // ── 1. Walrus CLI config ──
     const walrusConfigDir = join(homedir(), '.config', 'walrus')
     mkdirSync(walrusConfigDir, { recursive: true })
     walrusConfigPath = join(walrusConfigDir, 'client_config.yaml')
@@ -66,7 +378,23 @@ export async function deployToWalrus(params: DeployParams): Promise<DeployResult
     writeFileSync(walrusConfigPath, walrusYaml, { mode: 0o600 })
     log('Walrus client config written')
 
-    // ── sites-config: enable walrus_binary and walrus_config ──
+    // ── 2. Sui wallet setup ──
+    setupWallet(network, keystoreContent, suiAddress, logs)
+
+    // ── 3. Clean up useless files ──
+    const keepFile = join(distPath, '.keep')
+    if (existsSync(keepFile)) {
+      unlinkSync(keepFile)
+      log('Removed .keep file from dist')
+    }
+
+    // ── 4. Ensure sufficient funds ──
+    const fundsResult = await ensureFunds(network, distPath, epochs, keystoreContent, suiAddress, logs)
+    if (!fundsResult.sufficient) {
+      return { success: false, error: fundsResult.error, logs }
+    }
+
+    // ── 5. Sites config: enable walrus_binary and walrus_config ──
     const originalSitesConfig = `/etc/walrus/sites-config-${network}.yaml`
     let sitesConfigContent = readFileSync(originalSitesConfig, 'utf-8')
     sitesConfigContent = sitesConfigContent.replace(
@@ -81,7 +409,7 @@ export async function deployToWalrus(params: DeployParams): Promise<DeployResult
     writeFileSync(tempSitesConfig, sitesConfigContent, { mode: 0o600 })
     log('Sites config prepared')
 
-    // ── Verify binaries ──
+    // ── 6. Verify binaries ──
     const siteBuilderBin = `/usr/local/bin/site-builder-${network}`
     if (!existsSync(siteBuilderBin)) {
       return { success: false, error: `site-builder binary not found: ${siteBuilderBin}`, logs }
@@ -90,9 +418,7 @@ export async function deployToWalrus(params: DeployParams): Promise<DeployResult
       return { success: false, error: `walrus binary not found: /usr/local/bin/walrus-${network}`, logs }
     }
 
-    // ── Build command using walrus-deploy script ──
-    // The script's CI mode (setup_ci_keystore) handles wallet setup from
-    // SUI_KEYSTORE / SUI_ADDRESS env vars — we don't pass --wallet/--wallet-address.
+    // ── 7. Build and run walrus-deploy ──
     let cmd = `walrus-deploy`
     cmd += ` --verbose`
     cmd += ` --folder "${distPath}"`
@@ -109,10 +435,8 @@ export async function deployToWalrus(params: DeployParams): Promise<DeployResult
         ...process.env as Record<string, string>,
         HOME: process.env.HOME || '/root',
         PATH: `${process.env.PATH}:/usr/local/bin`,
-        // walrus-deploy CI mode — the script auto-configures Sui keystore + client.yaml
         SUI_KEYSTORE: keystoreContent,
         SUI_ADDRESS: suiAddress,
-        // site-builder / walrus binary overrides
         SITE_BUILDER_BIN: siteBuilderBin,
         CI: 'true',
       },
@@ -132,7 +456,7 @@ export async function deployToWalrus(params: DeployParams): Promise<DeployResult
       return { success: false, error: `deploy failed:\n${errorOutput}`, logs }
     }
 
-    // ── Parse deploy output ──
+    // ── 8. Parse deploy output ──
     let objectId: string | undefined
     let base36Url: string | undefined
 
@@ -145,7 +469,6 @@ export async function deployToWalrus(params: DeployParams): Promise<DeployResult
       }
     }
 
-    // Fallback: parse from stdout
     if (!objectId || !base36Url) {
       const combined = stdout + '\n' + stderr
       const objectMatch = combined.match(/Object ID:\s*([a-f0-9]+)/i)
@@ -171,11 +494,9 @@ export async function deployToWalrus(params: DeployParams): Promise<DeployResult
     log(`Deploy exception: ${err instanceof Error ? err.message : 'unknown'}`)
     return { success: false, error: err instanceof Error ? err.message : 'deploy exception', logs }
   } finally {
-    // Clean up config files
     try {
       if (existsSync(walrusConfigPath)) unlinkSync(walrusConfigPath)
       if (existsSync(tempSitesConfig)) unlinkSync(tempSitesConfig)
-      // Clean up Sui wallet files written by walrus-deploy's setup_ci_keystore
       const keystorePath = join(homedir(), '.sui', 'sui_config', 'sui.keystore')
       const clientYamlPath = join(homedir(), '.sui', 'sui_config', 'client.yaml')
       if (existsSync(keystorePath)) unlinkSync(keystorePath)
