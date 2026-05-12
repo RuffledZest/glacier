@@ -421,6 +421,7 @@ export async function deployToWalrus(params: DeployParams): Promise<DeployResult
     // ── 7. Build and run walrus-deploy ──
     let cmd = `walrus-deploy`
     cmd += ` --verbose`
+    cmd += ` --json`
     cmd += ` --folder "${distPath}"`
     cmd += ` --network "${network}"`
     cmd += ` --epochs "${epochs}"`
@@ -460,21 +461,37 @@ export async function deployToWalrus(params: DeployParams): Promise<DeployResult
     let objectId: string | undefined
     let base36Url: string | undefined
 
-    // 8a. Parse CI output file written by walrus-deploy
-    const outputFile = '/tmp/walrus-deploy-output.txt'
-    if (existsSync(outputFile)) {
-      const output = readFileSync(outputFile, 'utf-8')
-      for (const line of output.split('\n')) {
-        if (line.toLowerCase().startsWith('object id:')) {
-          objectId = line.split(':').slice(1).join(':').trim()
-        }
-        if (line.toLowerCase().startsWith('base36:')) {
-          base36Url = line.split(':').slice(1).join(':').trim()
+    // 8a. Parse JSON output file written by walrus-deploy --json
+    const jsonOutputFile = '/tmp/walrus-deploy-output.json'
+    if (existsSync(jsonOutputFile)) {
+      try {
+        const jsonContent = readFileSync(jsonOutputFile, 'utf-8')
+        const jsonData = JSON.parse(jsonContent)
+        if (jsonData.object_id) objectId = jsonData.object_id
+        if (jsonData.base36) base36Url = jsonData.base36
+        log(`Parsed JSON output: object_id=${jsonData.object_id}, base36=${jsonData.base36}`)
+      } catch (err) {
+        log(`Failed to parse JSON output file: ${err instanceof Error ? err.message : 'unknown'}`)
+      }
+    }
+
+    // 8b. Fallback: parse CI text output file
+    if (!objectId || !base36Url) {
+      const outputFile = '/tmp/walrus-deploy-output.txt'
+      if (existsSync(outputFile)) {
+        const output = readFileSync(outputFile, 'utf-8')
+        for (const line of output.split('\n')) {
+          if (line.toLowerCase().startsWith('object id:')) {
+            objectId = line.split(':').slice(1).join(':').trim()
+          }
+          if (line.toLowerCase().startsWith('base36:')) {
+            base36Url = line.split(':').slice(1).join(':').trim()
+          }
         }
       }
     }
 
-    // 8b. Fallback: parse from stdout/stderr
+    // 8c. Fallback: parse from stdout/stderr
     if (!objectId) {
       const combined = stdout + '\n' + stderr
       const objectMatch = combined.match(/New site object ID:\s*(0x[a-f0-9]+)/i)
@@ -485,7 +502,6 @@ export async function deployToWalrus(params: DeployParams): Promise<DeployResult
 
     if (!base36Url) {
       const combined = stdout + '\n' + stderr
-      // Match Base36: <value> or the base36 URL from portal instructions
       const base36Match = combined.match(/Base36[:\s]+([a-z0-9]+)/i)
                        || combined.match(/http:\/\/([a-z0-9]+)\.localhost:3000/i)
       if (base36Match) base36Url = base36Match[1]
