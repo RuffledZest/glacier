@@ -1,6 +1,6 @@
 import { Hono } from 'hono'
 import { serve } from '@hono/node-server'
-import { existsSync, statSync, openSync, readSync, closeSync, appendFileSync } from 'node:fs'
+import { existsSync, statSync, openSync, readSync, closeSync } from 'node:fs'
 import { join } from 'node:path'
 import { startBuild, readLogs, readState, WORKSPACE } from './builder.js'
 import { deployToWalrus } from './deployer.js'
@@ -43,15 +43,19 @@ app.get('/status/:buildId', (c) => {
     const buildId = c.req.param('buildId')
     const logPath = join(WORKSPACE, buildId, 'log.txt')
     const MAX_CHUNK = 64 * 1024 // cap each SSE message to 64KB to avoid browser memory explosions
+    const MAX_IDLE_TICKS = 120 // 250ms * 120 = 30s idle timeout after build/deploy finish
 
     let lastSize = 0
     let closed = false
+    let idleTicks = 0
 
     const stream = new ReadableStream({
       start(controller) {
         const send = () => {
           if (closed) return
           try {
+            let hadNewData = false
+
             // Check for new log content
             if (existsSync(logPath)) {
               const stat = statSync(logPath)
@@ -71,15 +75,21 @@ app.get('/status/:buildId', (c) => {
                   setTimeout(send, 0)
                   return
                 }
-                controller.enqueue(new TextEncoder().encode(`:keepalive\n\n`))
-              } else {
-                controller.enqueue(new TextEncoder().encode(`:keepalive\n\n`))
+                hadNewData = true
               }
             }
 
-            // Check if build is done
+            if (hadNewData) {
+              idleTicks = 0
+              controller.enqueue(new TextEncoder().encode(`:keepalive\n\n`))
+            } else {
+              idleTicks++
+              controller.enqueue(new TextEncoder().encode(`:keepalive\n\n`))
+            }
+
+            // Only close once build/deploy are finished AND logs have been idle for a while
             const state = readState(buildId)
-            if (state.status === 'done' || state.status === 'error') {
+            if ((state.status === 'done' || state.status === 'error') && idleTicks > MAX_IDLE_TICKS) {
               controller.enqueue(new TextEncoder().encode(
                 `event: done\ndata: ${JSON.stringify(state)}\n\n`
               ))
@@ -122,14 +132,8 @@ app.post('/deploy', async (c) => {
     }
     if (!distPath) return c.json({ success: false, error: 'distPath required', logs: [] }, 400)
     if (!suiKeystore || !suiAddress) return c.json({ success: false, error: 'wallet credentials required', logs: [] }, 400)
-    const result = await deployToWalrus({ distPath, network: network as 'mainnet' | 'testnet', epochs, siteName, suiKeystore, suiAddress })
-    // Also write deploy logs to the build log file so they can be retrieved later
-    if (buildId) {
-      const logPath = join(WORKSPACE, buildId, 'log.txt')
-      try {
-        appendFileSync(logPath, '\n--- Deploy ---\n' + result.logs.join('\n') + '\n')
-      } catch {}
-    }
+    const logPath = buildId ? join(WORKSPACE, buildId, 'log.txt') : undefined
+    const result = await deployToWalrus({ distPath, network: network as 'mainnet' | 'testnet', epochs, siteName, suiKeystore, suiAddress, logPath })
     return c.json(result)
   } catch (err) {
     return c.json({ success: false, error: err instanceof Error ? err.message : 'deploy error', logs: [] }, 500)

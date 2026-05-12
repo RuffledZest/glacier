@@ -3,14 +3,17 @@ import { Link } from 'react-router-dom'
 import { ConnectButton, useCurrentAccount } from '@mysten/dapp-kit'
 import { useAuth } from '../hooks/useAuth'
 import { listDeployments, type Deployment } from '../lib/api'
+import { Button } from '../components/ui/Button'
+import { Badge } from '../components/ui/Badge'
+import { Plus, Box, GitBranch, Globe, Clock, Wallet, CheckCircle2, XCircle, Loader2, AlertCircle } from 'lucide-react'
 
-const STATUS: Record<string, { color: string; label: string }> = {
-  queued:    { color: '#8b949e', label: 'Queued' },
-  building:  { color: '#d29922', label: 'Building' },
-  built:     { color: '#58a6ff', label: 'Built' },
-  deploying: { color: '#d29922', label: 'Deploying' },
-  deployed:  { color: '#3fb950', label: 'Live' },
-  failed:    { color: '#f85149', label: 'Failed' },
+const STATUS: Record<string, { color: 'success' | 'warning' | 'danger' | 'info' | 'default'; label: string; icon: React.ReactNode }> = {
+  queued:    { color: 'default', label: 'Queued', icon: <Clock className="w-3 h-3" /> },
+  building:  { color: 'warning', label: 'Building', icon: <Loader2 className="w-3 h-3 animate-spin" /> },
+  built:     { color: 'info', label: 'Built', icon: <CheckCircle2 className="w-3 h-3" /> },
+  deploying: { color: 'warning', label: 'Deploying', icon: <Loader2 className="w-3 h-3 animate-spin" /> },
+  deployed:  { color: 'success', label: 'Live', icon: <CheckCircle2 className="w-3 h-3" /> },
+  failed:    { color: 'danger', label: 'Failed', icon: <XCircle className="w-3 h-3" /> },
 }
 
 function repoDisplay(url: string): string {
@@ -18,7 +21,7 @@ function repoDisplay(url: string): string {
 }
 
 export default function Dashboard() {
-  const { isAuthenticated, login } = useAuth()
+  const { isAuthenticated, login, isConnecting } = useAuth()
   const account = useCurrentAccount()
   const [deployments, setDeployments] = useState<Deployment[]>([])
   const [loading, setLoading] = useState(true)
@@ -34,22 +37,33 @@ export default function Dashboard() {
 
   if (!account) {
     return (
-      <div style={{ textAlign: 'center', padding: '80px 20px' }}>
-        <h2 style={{ fontSize: 24, fontWeight: 600, color: '#f0f6fc', marginBottom: 12 }}>Connect Wallet</h2>
-        <p style={{ color: '#8b949e', marginBottom: 24 }}>Connect your Phantom wallet to view your deployments.</p>
-        <ConnectButton connectText="Connect Phantom Wallet" />
+      <div className="flex flex-col items-center justify-center py-20 px-4">
+        <div className="w-16 h-16 bg-surface border border-border rounded-2xl flex items-center justify-center mb-6 shadow-sm">
+          <Wallet className="w-8 h-8 text-primary" />
+        </div>
+        <h2 className="text-2xl font-semibold text-white mb-3">Connect Wallet</h2>
+        <p className="text-textMuted mb-8 text-center max-w-md">
+          Connect your Phantom wallet to view your deployments and manage your projects.
+        </p>
+        <ConnectButton />
       </div>
     )
   }
 
   if (!isAuthenticated) {
     return (
-      <div style={{ textAlign: 'center', padding: '80px 20px' }}>
-        <h2 style={{ fontSize: 24, fontWeight: 600, color: '#f0f6fc', marginBottom: 12 }}>Sign In</h2>
-        <p style={{ color: '#8b949e', marginBottom: 24 }}>Sign a message with your wallet to continue.</p>
-        <button onClick={login} style={{ background: '#238636', color: '#fff', padding: '12px 32px', fontSize: 15, borderRadius: 8 }}>
-          Sign In with Wallet
-        </button>
+      <div className="flex flex-col items-center justify-center py-20 px-4">
+        <div className="w-16 h-16 bg-surface border border-border rounded-2xl flex items-center justify-center mb-6 shadow-sm">
+          <ShieldCheck className="w-8 h-8 text-primary" />
+        </div>
+        <h2 className="text-2xl font-semibold text-white mb-3">Sign In</h2>
+        <p className="text-textMuted mb-8 text-center max-w-md">
+          Sign a message with your wallet to authenticate and view your dashboard.
+        </p>
+        <Button onClick={login} disabled={isConnecting} size="lg" className="px-8 shadow-lg shadow-primary/20">
+          {isConnecting ? <Loader2 className="w-5 h-5 animate-spin mr-2" /> : null}
+          {isConnecting ? 'Signing In...' : 'Sign In with Wallet'}
+        </Button>
       </div>
     )
   }
@@ -57,73 +71,81 @@ export default function Dashboard() {
   const activeDeployments = deployments.filter((d) => d.status !== 'deleted')
 
   return (
-    <div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
-        <h2 style={{ fontSize: 22, fontWeight: 600, color: '#f0f6fc' }}>Deployments</h2>
+    <div className="w-full">
+      <div className="flex justify-between items-center mb-8">
+        <h2 className="text-2xl font-bold text-white tracking-tight">Deployments</h2>
         <Link to="/deploy">
-          <button style={{ background: '#238636', color: '#fff', padding: '10px 20px', fontSize: 14, fontWeight: 600, borderRadius: 8 }}>
-            + New Deploy
-          </button>
+          <Button className="shadow-sm">
+            <Plus className="w-4 h-4 mr-2" />
+            New Deploy
+          </Button>
         </Link>
       </div>
 
       {loading ? (
-        <p style={{ color: '#8b949e', textAlign: 'center', padding: 40 }}>Loading deployments...</p>
+        <div className="flex flex-col items-center justify-center py-20">
+          <Loader2 className="w-8 h-8 text-primary animate-spin mb-4" />
+          <p className="text-textMuted font-medium">Loading deployments...</p>
+        </div>
       ) : activeDeployments.length === 0 ? (
-        <div style={{ textAlign: 'center', padding: 80 }}>
-          <div style={{ fontSize: 40, marginBottom: 16 }}>📦</div>
-          <p style={{ color: '#8b949e', fontSize: 16, marginBottom: 20 }}>No deployments yet.</p>
+        <div className="border border-dashed border-border rounded-xl flex flex-col items-center justify-center py-24 px-4 bg-surface/30">
+          <Box className="w-12 h-12 text-textMuted mb-4" />
+          <h3 className="text-lg font-semibold text-white mb-2">No deployments yet</h3>
+          <p className="text-textMuted mb-6 text-center max-w-sm">
+            You haven't deployed any projects yet. Connect your GitHub and ship your first site.
+          </p>
           <Link to="/deploy">
-            <button style={{ background: '#238636', color: '#fff', padding: '12px 28px', fontSize: 15, borderRadius: 8 }}>
+            <Button>
               Deploy your first project
-            </button>
+            </Button>
           </Link>
         </div>
       ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        <div className="grid gap-3">
           {activeDeployments.map((d) => {
-            const s = STATUS[d.status] || { color: '#8b949e', label: d.status }
+            const s = STATUS[d.status] || STATUS.queued
             return (
               <Link
                 key={d.id}
                 to={`/deployments/${d.id}`}
-                style={{ textDecoration: 'none' }}
+                className="group block p-4 bg-surface rounded-xl border border-border hover:border-primary/50 transition-all hover:shadow-md"
               >
-                <div style={{
-                  display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-                  padding: '16px 20px', background: '#161b22', borderRadius: 10,
-                  border: '1px solid #21262d', transition: 'border-color 0.15s',
-                }}>
-                  <div>
-                    <div style={{ fontSize: 15, fontWeight: 600, color: '#f0f6fc' }}>
-                      {repoDisplay(d.repoUrl)}
+                <div className="flex items-center justify-between">
+                  <div className="flex flex-col gap-2">
+                    <div className="flex items-center gap-3">
+                      <span className="text-base font-semibold text-white group-hover:text-primary transition-colors">
+                        {repoDisplay(d.repoUrl)}
+                      </span>
+                      <Badge variant={s.color} className="gap-1.5 uppercase tracking-wider text-[10px]">
+                        {s.icon}
+                        {s.label}
+                      </Badge>
                     </div>
-                    <div style={{ fontSize: 12, color: '#8b949e', marginTop: 4, display: 'flex', gap: 10 }}>
-                      <span>{d.branch}</span>
-                      <span>·</span>
-                      <span>{d.network === 'testnet' ? '🧪 Testnet' : '🌐 Mainnet'}</span>
-                      <span>·</span>
-                      <span>{new Date(d.createdAt).toLocaleDateString()}</span>
+                    
+                    <div className="flex items-center gap-4 text-xs font-medium text-textMuted">
+                      <div className="flex items-center gap-1.5">
+                        <GitBranch className="w-3.5 h-3.5" />
+                        {d.branch}
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        <Globe className="w-3.5 h-3.5" />
+                        {d.network === 'testnet' ? 'Testnet' : 'Mainnet'}
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        <Clock className="w-3.5 h-3.5" />
+                        {new Date(d.createdAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                      </div>
                       {d.base36Url && (
-                        <>
-                          <span>·</span>
-                          <span style={{ color: '#58a6ff', fontFamily: 'monospace', fontSize: 11 }}>{d.base36Url}</span>
-                        </>
+                        <div className="flex items-center gap-1.5 text-info ml-2 bg-info/10 px-2 py-0.5 rounded-md">
+                          <span className="font-mono">{d.base36Url}</span>
+                        </div>
                       )}
                     </div>
                   </div>
-                  <span style={{
-                    display: 'inline-flex', alignItems: 'center', gap: 6,
-                    padding: '4px 12px', borderRadius: 20, fontSize: 12, fontWeight: 600,
-                    background: `${s.color}20`, color: s.color, textTransform: 'uppercase', letterSpacing: 0.5,
-                  }}>
-                    <span style={{
-                      width: 6, height: 6, borderRadius: '50%',
-                      background: s.color,
-                      animation: ['building', 'deploying', 'queued'].includes(d.status) ? 'pulse 1.5s infinite' : 'none',
-                    }} />
-                    {s.label}
-                  </span>
+                  
+                  <div className="text-textMuted group-hover:text-white transition-colors">
+                    <AlertCircle className="w-5 h-5 opacity-0 group-hover:opacity-100 transition-opacity" />
+                  </div>
                 </div>
               </Link>
             )
@@ -132,4 +154,8 @@ export default function Dashboard() {
       )}
     </div>
   )
+}
+
+function ShieldCheck(props: any) {
+  return <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10"/><path d="m9 12 2 2 4-4"/></svg>
 }

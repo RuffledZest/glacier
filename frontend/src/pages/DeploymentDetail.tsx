@@ -4,14 +4,32 @@ import { useAuth } from '../hooks/useAuth'
 import { getDeployment, deleteDeployment, retryDeployment, getToken, type Deployment } from '../lib/api'
 import { ansiToHtml } from '../lib/ansi'
 import { useSSE } from '../hooks/useSSE'
+import { Button } from '../components/ui/Button'
+import { Card, CardHeader, CardTitle, CardContent } from '../components/ui/Card'
+import { Badge } from '../components/ui/Badge'
+import { Spinner } from '../components/ui/Spinner'
+import {
+  ArrowLeft, ExternalLink, GitBranch, Globe, Terminal, Trash2, RotateCcw,
+  Clock, CheckCircle2, XCircle, AlertCircle, Calendar, Hash, FolderOutput, Code2, Database, LayoutDashboard
+} from 'lucide-react'
+import { cn } from '../lib/utils'
 
-const STATUS: Record<string, { color: string; label: string }> = {
-  queued:    { color: '#8b949e', label: 'Queued' },
-  building:  { color: '#d29922', label: 'Building' },
-  built:     { color: '#58a6ff', label: 'Built' },
-  deploying: { color: '#d29922', label: 'Deploying' },
-  deployed:  { color: '#3fb950', label: 'Live' },
-  failed:    { color: '#f85149', label: 'Failed' },
+function GithubIcon({ className }: { className?: string }) {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <path d="M15 22v-4a4.8 4.8 0 0 0-1-3.5c3 0 6-2 6-5.5.08-1.25-.27-2.48-1-3.5.28-1.15.28-2.35 0-3.5 0 0-1 0-3 1.5-2.64-.5-5.36-.5-8 0C6 2 5 2 5 2c-.3 1.15-.3 2.35 0 3.5A5.403 5.403 0 0 0 4 9c0 3.5 3 5.5 6 5.5-.39.49-.68 1.05-.85 1.65-.17.6-.22 1.23-.15 1.85v4"/>
+      <path d="M9 18c-4.51 2-5-2-7-2"/>
+    </svg>
+  )
+}
+
+const STATUS: Record<string, { color: 'success' | 'warning' | 'danger' | 'info' | 'default'; label: string; icon: React.ReactNode }> = {
+  queued:    { color: 'default', label: 'Queued', icon: <Clock className="w-3 h-3" /> },
+  building:  { color: 'warning', label: 'Building', icon: <Spinner className="w-3 h-3" /> },
+  built:     { color: 'info', label: 'Built', icon: <CheckCircle2 className="w-3 h-3" /> },
+  deploying: { color: 'warning', label: 'Deploying', icon: <Spinner className="w-3 h-3" /> },
+  deployed:  { color: 'success', label: 'Live', icon: <CheckCircle2 className="w-3 h-3" /> },
+  failed:    { color: 'danger', label: 'Failed', icon: <XCircle className="w-3 h-3" /> },
 }
 
 function repoDisplay(url: string): string {
@@ -31,7 +49,7 @@ export default function DeploymentDetail() {
   const [sseDone, setSseDone] = useState(false)
   const logsEndRef = useRef<HTMLDivElement>(null)
 
-  const isLive = !!(d && d.status === 'building')
+  const isLive = !!(d && ['building', 'deploying'].includes(d.status))
   const hasError = !!(d && d.status === 'failed')
 
   // Reset local state when switching deployments
@@ -121,159 +139,208 @@ export default function DeploymentDetail() {
     }
   }
 
-  if (!isAuthenticated) return <p style={{ color: '#8b949e', textAlign: 'center', padding: 40 }}>Sign in to view.</p>
-  if (loading) return <p style={{ color: '#8b949e', textAlign: 'center', padding: 40 }}>Loading...</p>
-  if (error || !d) return (
-    <div style={{ textAlign: 'center', padding: 40 }}>
-      <p style={{ color: '#f85149', marginBottom: 16 }}>{error || 'Not found'}</p>
-      <Link to="/dashboard" style={{ color: '#58a6ff' }}>Back to dashboard</Link>
-    </div>
-  )
+  if (!isAuthenticated) {
+    return (
+      <div className="flex flex-col items-center justify-center py-20 text-center">
+        <AlertCircle className="w-12 h-12 text-warning mb-4" />
+        <h2 className="text-xl font-semibold mb-2">Authentication Required</h2>
+        <p className="text-textMuted mb-6">Please sign in to view this deployment.</p>
+        <Link to="/dashboard">
+          <Button>Go to Dashboard</Button>
+        </Link>
+      </div>
+    )
+  }
 
-  const s = STATUS[d.status] || { color: '#8b949e', label: d.status }
+  if (loading) {
+    return (
+      <div className="flex flex-col items-center justify-center py-20">
+        <Spinner className="w-8 h-8 text-primary mb-4" />
+        <p className="text-textMuted font-medium">Loading deployment details...</p>
+      </div>
+    )
+  }
+
+  if (error || !d) {
+    return (
+      <div className="flex flex-col items-center justify-center py-20 text-center">
+        <XCircle className="w-12 h-12 text-danger mb-4" />
+        <h2 className="text-xl font-semibold mb-2 text-danger">Deployment Not Found</h2>
+        <p className="text-textMuted mb-6">{error || 'The deployment you are looking for does not exist.'}</p>
+        <Link to="/dashboard">
+          <Button variant="secondary">
+            <ArrowLeft className="w-4 h-4 mr-2" /> Back to Dashboard
+          </Button>
+        </Link>
+      </div>
+    )
+  }
+
+  const s = STATUS[d.status] || STATUS.queued
 
   return (
-    <div style={{ maxWidth: 720, margin: '0 auto' }}>
-      <Link to="/dashboard" style={{ fontSize: 13, color: '#8b949e', display: 'inline-block', marginBottom: 20 }}>
-        &larr; Back to dashboard
-      </Link>
-
-      <div style={{ padding: 28, background: '#161b22', borderRadius: 12, border: '1px solid #21262d' }}>
-        {/* Header */}
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 24 }}>
-          <div>
-            <h2 style={{ fontSize: 22, fontWeight: 700, color: '#f0f6fc', marginBottom: 6 }}>
-              {repoDisplay(d.repoUrl)}
-            </h2>
-            <div style={{ fontSize: 13, color: '#8b949e', display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-              <span>{d.repoUrl}</span>
-              <span>·</span>
-              <span>{d.branch}</span>
-              <span>·</span>
-              <span>{d.network === 'testnet' ? '🧪 Testnet' : '🌐 Mainnet'}</span>
-            </div>
-          </div>
-          <span style={{
-            padding: '6px 16px', borderRadius: 20, fontSize: 13, fontWeight: 700,
-            background: `${s.color}18`, color: s.color, textTransform: 'uppercase', letterSpacing: 0.5,
-          }}>
-            {s.label}
-          </span>
+    <div className="max-w-5xl mx-auto space-y-6">
+      {/* Top Nav */}
+      <div className="flex items-center gap-4">
+        <Link 
+          to="/dashboard" 
+          className="p-2 -ml-2 rounded-lg hover:bg-surface text-textMuted hover:text-white transition-colors"
+        >
+          <ArrowLeft className="w-5 h-5" />
+        </Link>
+        <div className="flex items-center gap-2 text-sm font-medium text-textMuted">
+          <LayoutDashboard className="w-4 h-4" />
+          <Link to="/dashboard" className="hover:text-white transition-colors">Deployments</Link>
+          <span className="text-border">/</span>
+          <span className="text-white truncate max-w-[200px]">{repoDisplay(d.repoUrl)}</span>
         </div>
+      </div>
 
-        {/* Success box */}
-        {d.status === 'deployed' && d.base36Url && (
-          <div style={{
-            padding: 20, background: '#0d2b1a', borderRadius: 10, border: '1px solid #238636',
-            marginBottom: 24,
-          }}>
-            <div style={{ fontSize: 11, color: '#8b949e', marginBottom: 4, textTransform: 'uppercase', letterSpacing: 1 }}>
-              Live URL
-            </div>
-            <a
-              href={`https://${d.base36Url}.wal.app`}
-              target="_blank" rel="noopener noreferrer"
-              style={{ fontSize: 18, fontWeight: 700, color: '#3fb950', wordBreak: 'break-all' }}
-            >
-              {d.base36Url}.wal.app
-            </a>
-            {d.objectId && (
-              <div style={{ fontSize: 11, color: '#8b949e', marginTop: 8, fontFamily: 'monospace', wordBreak: 'break-all' }}>
-                Object ID: {d.objectId}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        {/* Left Column (Main Content) */}
+        <div className="lg:col-span-2 space-y-6">
+          
+          {/* Header Card */}
+          <Card className="border-border">
+            <div className="p-6">
+              <div className="flex justify-between items-start mb-6">
+                <div>
+                  <h1 className="text-2xl font-bold tracking-tight text-white mb-2 flex items-center gap-3">
+                    <GithubIcon className="w-6 h-6" />
+                    {repoDisplay(d.repoUrl)}
+                  </h1>
+                  <div className="flex items-center gap-4 text-sm text-textMuted">
+                    <span className="flex items-center gap-1.5"><GitBranch className="w-4 h-4" /> {d.branch}</span>
+                    <span className="flex items-center gap-1.5"><Globe className="w-4 h-4" /> {d.network === 'testnet' ? 'Testnet' : 'Mainnet'}</span>
+                  </div>
+                </div>
+                <Badge variant={s.color} className="text-sm py-1 px-3 gap-2 uppercase tracking-widest font-bold">
+                  {s.icon} {s.label}
+                </Badge>
               </div>
-            )}
-          </div>
-        )}
 
-        {/* Error box */}
-        {d.error && (
-          <div style={{
-            padding: 16, background: '#490202', border: '1px solid #f85149',
-            borderRadius: 8, color: '#f85149', fontSize: 13, marginBottom: 24, whiteSpace: 'pre-wrap',
-          }}>
-            {d.error}
-          </div>
-        )}
+              {/* Success Box */}
+              {d.status === 'deployed' && d.base36Url && (
+                <div className="mt-6 bg-success/10 border border-success/30 rounded-xl p-5">
+                  <div className="text-xs font-semibold text-success uppercase tracking-wider mb-2">Live URL</div>
+                  <a
+                    href={`https://${d.base36Url}.wal.app`}
+                    target="_blank" rel="noopener noreferrer"
+                    className="group inline-flex items-center gap-2 text-xl font-bold text-success hover:text-success/80 transition-colors break-all"
+                  >
+                    {d.base36Url}.wal.app
+                    <ExternalLink className="w-5 h-5 opacity-50 group-hover:opacity-100 transition-opacity" />
+                  </a>
+                </div>
+              )}
 
-        {/* Info grid */}
-        <div style={{
-          display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px 32px',
-          padding: '20px 0', borderTop: '1px solid #21262d', borderBottom: '1px solid #21262d',
-          marginBottom: 20,
-        }}>
-          <Info label="Install" value={d.installCommand || 'auto'} />
-          <Info label="Build" value={d.buildCommand || 'auto'} />
-          <Info label="Output" value={d.outputDir || 'auto'} />
-          <Info label="Base Dir" value={d.baseDir} />
-          <Info label="Deploy ID" value={d.id.slice(0, 8) + '...'} />
-          <Info label="Created" value={new Date(d.createdAt).toLocaleString()} />
-          <Info label="Updated" value={new Date(d.updatedAt).toLocaleString()} />
-          <Info label="Network" value={d.network} />
+              {/* Error Box */}
+              {d.error && (
+                <div className="mt-6 bg-danger/10 border border-danger/30 rounded-xl p-5">
+                  <div className="flex items-center gap-2 text-danger font-semibold mb-2">
+                    <XCircle className="w-5 h-5" /> Build Failed
+                  </div>
+                  <pre className="text-sm text-danger/90 font-mono whitespace-pre-wrap break-words">{d.error}</pre>
+                </div>
+              )}
+            </div>
+
+            {/* Quick Actions Footer */}
+            <div className="bg-surface/50 border-t border-border px-6 py-4 flex items-center justify-end gap-3 rounded-b-xl">
+              {d.status === 'failed' && (
+                <Button variant="primary" onClick={handleRetry} disabled={retrying}>
+                  {retrying ? <Spinner className="mr-2" /> : <RotateCcw className="w-4 h-4 mr-2" />}
+                  {retrying ? 'Retrying...' : 'Retry Build'}
+                </Button>
+              )}
+              <Button variant="danger" onClick={handleDelete} disabled={deleting}>
+                {deleting ? <Spinner className="mr-2" /> : <Trash2 className="w-4 h-4 mr-2" />}
+                {deleting ? 'Deleting...' : 'Delete'}
+              </Button>
+            </div>
+          </Card>
+
+          {/* Terminal / Logs */}
+          <Card className="border-border overflow-hidden bg-black flex flex-col min-h-[400px]">
+            <div className="bg-surface border-b border-border px-4 py-3 flex items-center justify-between">
+              <div className="flex items-center gap-2 text-sm font-medium text-textMuted">
+                <Terminal className="w-4 h-4" /> Build Logs
+              </div>
+              {isLive && (
+                <div className="flex items-center gap-2 text-xs font-medium text-warning bg-warning/10 px-2.5 py-1 rounded-full">
+                  <span className="w-2 h-2 rounded-full bg-warning animate-pulse"></span>
+                  Live
+                </div>
+              )}
+            </div>
+            <div className="flex-1 p-4 overflow-x-auto overflow-y-auto max-h-[600px] font-mono text-sm leading-relaxed scrollbar-thin scrollbar-thumb-border scrollbar-track-transparent">
+              <pre
+                dangerouslySetInnerHTML={{
+                  __html: ansiToHtml(liveLogs || d.logs || 'Waiting for logs...'),
+                }}
+                className="text-textMuted"
+              />
+              <div ref={logsEndRef} className="h-4" />
+            </div>
+          </Card>
         </div>
 
-        {/* Build logs — always expanded during live stream or when there's an error */}
-        <details open={isLive || hasError} style={{ marginBottom: 24 }}>
-          <summary style={{ fontSize: 13, color: '#58a6ff', cursor: 'pointer', marginBottom: 10 }}>
-            Build Logs {isLive && <span style={{ color: '#d29922', fontSize: 11 }}>● Live</span>}
-          </summary>
-          <div style={{
-            background: '#0d1117', borderRadius: 8, border: '1px solid #21262d',
-            maxHeight: 500, overflow: 'auto', position: 'relative',
-          }}>
-            <pre
-              dangerouslySetInnerHTML={{
-                __html: ansiToHtml(liveLogs || d.logs || 'No logs available.'),
-              }}
-              style={{
-                margin: 0, padding: 16, fontSize: 12, color: '#c9d1d9',
-                whiteSpace: 'pre-wrap', wordBreak: 'break-all', lineHeight: 1.6,
-                fontFamily: '"JetBrains Mono", "Fira Code", "SF Mono", monospace',
-                minHeight: 60,
-              }}
-            />
-            <div ref={logsEndRef} />
-          </div>
-        </details>
+        {/* Right Column (Metadata) */}
+        <div className="space-y-6">
+          <Card>
+            <CardHeader className="pb-4 border-b border-border/50">
+              <CardTitle className="text-sm flex items-center gap-2 text-textMuted">
+                <Database className="w-4 h-4" /> Deployment Details
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="pt-4 space-y-6">
+              
+              <div className="space-y-4">
+                <DetailRow icon={<Hash className="w-4 h-4" />} label="Deployment ID" value={d.id.slice(0, 8) + '...'} />
+                <DetailRow icon={<Calendar className="w-4 h-4" />} label="Created At" value={new Date(d.createdAt).toLocaleString()} />
+                <DetailRow icon={<Clock className="w-4 h-4" />} label="Updated At" value={new Date(d.updatedAt).toLocaleString()} />
+              </div>
 
-        {/* Actions */}
-        <div style={{ borderTop: '1px solid #21262d', paddingTop: 20, display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
-          {d.status === 'failed' && (
-            <button
-              onClick={handleRetry}
-              disabled={retrying}
-              style={{
-                background: retrying ? '#21262d' : '#1f6feb',
-                color: retrying ? '#484f58' : '#fff',
-                border: `1px solid ${retrying ? '#21262d' : '#1f6feb'}`,
-                padding: '8px 20px', borderRadius: 8, fontSize: 13, fontWeight: 600,
-              }}
-            >
-              {retrying ? 'Retrying...' : 'Retry Deployment'}
-            </button>
-          )}
-          <button
-            onClick={handleDelete}
-            disabled={deleting}
-            style={{
-              background: deleting ? '#21262d' : '#490202',
-              color: deleting ? '#484f58' : '#f85149',
-              border: `1px solid ${deleting ? '#21262d' : '#f85149'}`,
-              padding: '8px 20px', borderRadius: 8, fontSize: 13, fontWeight: 600,
-            }}
-          >
-            {deleting ? 'Deleting...' : 'Delete'}
-          </button>
+              <div className="h-px bg-border/50 w-full" />
+
+              <div className="space-y-4">
+                <h4 className="text-xs font-semibold uppercase tracking-wider text-textMuted mb-2">Build Config</h4>
+                <DetailRow icon={<Code2 className="w-4 h-4" />} label="Install Cmd" value={d.installCommand || 'auto'} />
+                <DetailRow icon={<Terminal className="w-4 h-4" />} label="Build Cmd" value={d.buildCommand || 'auto'} />
+                <DetailRow icon={<FolderOutput className="w-4 h-4" />} label="Output Dir" value={d.outputDir || 'auto'} />
+                <DetailRow icon={<FolderOutput className="w-4 h-4" />} label="Base Dir" value={d.baseDir || '.'} />
+              </div>
+
+              {d.objectId && (
+                <>
+                  <div className="h-px bg-border/50 w-full" />
+                  <div className="space-y-2">
+                    <h4 className="text-xs font-semibold uppercase tracking-wider text-textMuted">Storage Details</h4>
+                    <div className="text-xs font-mono text-info break-all bg-info/10 p-2 rounded border border-info/20">
+                      ID: {d.objectId}
+                    </div>
+                  </div>
+                </>
+              )}
+
+            </CardContent>
+          </Card>
         </div>
       </div>
     </div>
   )
 }
 
-function Info({ label, value }: { label: string; value: string }) {
+function DetailRow({ icon, label, value }: { icon: React.ReactNode; label: string; value: string }) {
   return (
-    <div>
-      <div style={{ fontSize: 11, color: '#8b949e', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 3 }}>{label}</div>
-      <div style={{ fontSize: 13, color: '#c9d1d9' }}>{value || '—'}</div>
+    <div className="flex items-center justify-between gap-4">
+      <div className="flex items-center gap-2 text-textMuted text-sm">
+        {icon}
+        <span>{label}</span>
+      </div>
+      <div className="text-sm font-medium text-white truncate max-w-[150px]" title={value}>
+        {value}
+      </div>
     </div>
   )
 }

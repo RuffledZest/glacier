@@ -1,5 +1,5 @@
-import { spawnSync } from 'node:child_process'
-import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync, statSync, readdirSync } from 'node:fs'
+import { spawn, spawnSync } from 'node:child_process'
+import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync, statSync, readdirSync, appendFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 
@@ -10,6 +10,7 @@ export interface DeployParams {
   siteName?: string
   suiKeystore: string
   suiAddress: string
+  logPath?: string
 }
 
 export interface DeployResult {
@@ -336,11 +337,57 @@ async function ensureFunds(
 // Main deploy function
 // ───────────────────────────────────────────────────────────────
 
+function runStreamed(
+  cmd: string,
+  env: Record<string, string>,
+  logPath: string | undefined,
+  timeout = 300000
+): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+  return new Promise((resolve) => {
+    const proc = spawn(cmd, { shell: true, env, timeout })
+    let stdout = ''
+    let stderr = ''
+
+    proc.stdout.on('data', (d: Buffer) => {
+      const text = d.toString()
+      stdout += text
+      if (logPath) {
+        try { appendFileSync(logPath, text) } catch {}
+      }
+    })
+
+    proc.stderr.on('data', (d: Buffer) => {
+      const text = d.toString()
+      stderr += text
+      if (logPath) {
+        try { appendFileSync(logPath, text) } catch {}
+      }
+    })
+
+    proc.on('close', (code) => resolve({ exitCode: code ?? 1, stdout, stderr }))
+    proc.on('error', (err) => {
+      const msg = `Process error: ${err.message}\n`
+      if (logPath) {
+        try { appendFileSync(logPath, msg) } catch {}
+      }
+      resolve({ exitCode: 1, stdout, stderr })
+    })
+  })
+}
+
 export async function deployToWalrus(params: DeployParams): Promise<DeployResult> {
   const logs: string[] = []
-  const log = (msg: string) => { logs.push(msg); console.log(msg) }
+  const log = (msg: string) => {
+    logs.push(msg)
+    console.log(msg)
+    if (params.logPath) {
+      try { appendFileSync(params.logPath, msg + '\n') } catch {}
+    }
+  }
 
   const { distPath, network, epochs = 'max', siteName, suiKeystore, suiAddress } = params
+
+  log('--- Deploy ---')
 
   if (!existsSync(distPath)) {
     return { success: false, error: `dist path not found: ${distPath}`, logs }
@@ -430,31 +477,23 @@ export async function deployToWalrus(params: DeployParams): Promise<DeployResult
 
     log(`Running: ${cmd}`)
 
-    const result = spawnSync(cmd, {
-      shell: true,
-      env: {
-        ...process.env as Record<string, string>,
-        HOME: process.env.HOME || '/root',
-        PATH: `${process.env.PATH}:/usr/local/bin`,
-        SUI_KEYSTORE: keystoreContent,
-        SUI_ADDRESS: suiAddress,
-        SITE_BUILDER_BIN: siteBuilderBin,
-        CI: 'true',
-      },
-      timeout: 300000,
-      encoding: 'utf-8',
-      maxBuffer: 10 * 1024 * 1024,
-    })
+    const deployEnv = {
+      ...process.env as Record<string, string>,
+      HOME: process.env.HOME || '/root',
+      PATH: `${process.env.PATH}:/usr/local/bin`,
+      SUI_KEYSTORE: keystoreContent,
+      SUI_ADDRESS: suiAddress,
+      SITE_BUILDER_BIN: siteBuilderBin,
+      CI: 'true',
+    }
 
-    const stdout = result.stdout?.trim() || ''
-    const stderr = result.stderr?.trim() || ''
+    const { exitCode, stdout, stderr } = await runStreamed(cmd, deployEnv, params.logPath)
 
-    log(stdout)
-    if (stderr) log(stderr)
+    if (stdout) logs.push(stdout)
+    if (stderr) logs.push(stderr)
 
-    if (result.status !== 0) {
-      const errorOutput = [stdout, stderr].filter(Boolean).join('\n')
-      return { success: false, error: `deploy failed:\n${errorOutput}`, logs }
+    if (exitCode !== 0) {
+      return { success: false, error: `site-builder deploy failed with exit code ${exitCode}`, logs }
     }
 
     // ── 8. Parse deploy output ──

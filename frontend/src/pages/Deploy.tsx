@@ -8,18 +8,35 @@ import {
   createDeployment, listRepoBranches, estimateCost,
   type GithubRepo, type FrameworkInfo, type CostEstimate,
 } from '../lib/api'
+import { Button } from '../components/ui/Button'
+import { Card } from '../components/ui/Card'
+import { Badge } from '../components/ui/Badge'
+import { Input } from '../components/ui/Input'
+import { Spinner } from '../components/ui/Spinner'
+import { Search, Lock, Globe, Box, Settings2, ShieldCheck, ChevronDown, Rocket, FileCode2, Package, TerminalSquare } from 'lucide-react'
 
-const FRAMEWORK_BADGES: Record<string, { icon: string; bg: string }> = {
-  'Next.js':    { icon: '▲', bg: '#000000' },
-  'Vite':       { icon: '⚡', bg: '#646CFF' },
-  'Astro':      { icon: '🚀', bg: '#FF5A03' },
-  'Nuxt':       { icon: '💚', bg: '#00DC82' },
-  'Gatsby':     { icon: '💜', bg: '#663399' },
-  'SvelteKit':  { icon: '🧡', bg: '#FF3E00' },
-  'Remix':      { icon: '💿', bg: '#121212' },
-  'Angular':    { icon: '🅰️', bg: '#DD0031' },
-  'React':      { icon: '⚛️', bg: '#61DAFB' },
-  'Static HTML':{ icon: '🌐', bg: '#E34F26' },
+// Simple SVG for GitHub since Lucide v0.300+ removed brand icons
+function GithubIcon({ className }: { className?: string }) {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <path d="M15 22v-4a4.8 4.8 0 0 0-1-3.5c3 0 6-2 6-5.5.08-1.25-.27-2.48-1-3.5.28-1.15.28-2.35 0-3.5 0 0-1 0-3 1.5-2.64-.5-5.36-.5-8 0C6 2 5 2 5 2c-.3 1.15-.3 2.35 0 3.5A5.403 5.403 0 0 0 4 9c0 3.5 3 5.5 6 5.5-.39.49-.68 1.05-.85 1.65-.17.6-.22 1.23-.15 1.85v4"/>
+      <path d="M9 18c-4.51 2-5-2-7-2"/>
+    </svg>
+  )
+}
+import { cn } from '../lib/utils'
+
+const FRAMEWORK_BADGES: Record<string, { bg: 'default' | 'success' | 'warning' | 'danger' | 'info' | 'outline' }> = {
+  'Next.js':    { bg: 'outline' },
+  'Vite':       { bg: 'info' },
+  'Astro':      { bg: 'warning' },
+  'Nuxt':       { bg: 'success' },
+  'Gatsby':     { bg: 'default' },
+  'SvelteKit':  { bg: 'warning' },
+  'Remix':      { bg: 'outline' },
+  'Angular':    { bg: 'danger' },
+  'React':      { bg: 'info' },
+  'Static HTML':{ bg: 'outline' },
 }
 
 export default function Deploy() {
@@ -65,6 +82,8 @@ export default function Deploy() {
   const [error, setError] = useState<string | null>(null)
   const [estimating, setEstimating] = useState(false)
   const [estimate, setEstimate] = useState<CostEstimate | null>(null)
+
+  const [showAdvanced, setShowAdvanced] = useState(false)
 
   // Init — check GitHub connection
   useEffect(() => {
@@ -242,188 +261,192 @@ export default function Deploy() {
 
   if (!account) {
     return (
-      <div style={{ textAlign: 'center', padding: '80px 20px' }}>
-        <p style={{ color: '#8b949e', marginBottom: 16 }}>Connect your wallet to deploy.</p>
-        <ConnectButton connectText="Connect Phantom Wallet" />
+      <div className="flex flex-col items-center justify-center py-20">
+        <h2 className="text-2xl font-semibold mb-4">Connect Wallet to Deploy</h2>
+        <ConnectButton />
       </div>
     )
   }
   if (!isAuthenticated) {
     return (
-      <div style={{ textAlign: 'center', padding: '80px 20px' }}>
-        <p style={{ color: '#8b949e', marginBottom: 16 }}>Sign in to continue.</p>
-        <button onClick={login} style={{ background: '#238636', color: '#fff', padding: '12px 32px', fontSize: 15, borderRadius: 8 }}>
-          Sign In
-        </button>
+      <div className="flex flex-col items-center justify-center py-20">
+        <ShieldCheck className="w-12 h-12 text-primary mb-4" />
+        <h2 className="text-2xl font-semibold mb-2">Sign in to continue</h2>
+        <p className="text-textMuted mb-6">Authenticate with your wallet to deploy projects.</p>
+        <Button onClick={login} size="lg">Sign In</Button>
       </div>
     )
   }
-  if (linking) return <p style={{ color: '#8b949e', textAlign: 'center', padding: 60 }}>Linking GitHub account...</p>
+  if (linking) {
+    return (
+      <div className="flex flex-col items-center justify-center py-20">
+        <Spinner className="w-8 h-8 text-primary mb-4" />
+        <p className="text-textMuted">Linking GitHub account...</p>
+      </div>
+    )
+  }
 
   return (
-    <div style={{ maxWidth: 640, margin: '0 auto' }}>
-      <h2 style={{ fontSize: 22, fontWeight: 700, color: '#f0f6fc', marginBottom: 6 }}>New Deployment</h2>
-      <p style={{ fontSize: 13, color: '#8b949e', marginBottom: 28 }}>
-        Select a repository to deploy to Walrus.
-      </p>
-
-      {!ghConnected ? (
-        <div style={{ textAlign: 'center', padding: 60 }}>
-          <div style={{ fontSize: 40, marginBottom: 16 }}>🐙</div>
-          <p style={{ color: '#8b949e', marginBottom: 20 }}>Connect your GitHub account to browse repositories.</p>
-          <button onClick={connectGithub} style={{ background: '#2da44e', color: '#fff', padding: '12px 28px', fontSize: 15, fontWeight: 600, borderRadius: 8 }}>
-            Connect GitHub Account
-          </button>
+    <div className="max-w-6xl mx-auto flex flex-col lg:flex-row gap-8">
+      
+      {/* Left Column: Repo Selection & Config */}
+      <div className="flex-1 space-y-6">
+        <div>
+          <h2 className="text-2xl font-bold tracking-tight mb-2">Deploy a new project</h2>
+          <p className="text-textMuted">Select a repository and configure your build settings.</p>
         </div>
-      ) : (
-        <>
-          {/* Repo selector */}
-          <div style={{ marginBottom: 24 }}>
-            <label style={{ display: 'block', fontSize: 13, color: '#8b949e', marginBottom: 8, fontWeight: 500 }}>
-              Select Repository
-            </label>
-            <input
-              type="text"
-              placeholder={loadingRepos ? 'Loading repositories...' : 'Search repositories...'}
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              disabled={loadingRepos}
-              style={{ marginBottom: 10 }}
-            />
-            <div style={{
-              maxHeight: 300, overflow: 'auto',
-              background: '#0d1117', borderRadius: 8, border: '1px solid #21262d',
-            }}>
+
+        {!ghConnected ? (
+          <Card className="flex flex-col items-center justify-center py-16 px-4 border-dashed bg-surface/30">
+            <GithubIcon className="w-16 h-16 text-textMuted mb-6" />
+            <h3 className="text-lg font-semibold mb-2">Connect GitHub</h3>
+            <p className="text-textMuted text-center max-w-sm mb-6">
+              Connect your GitHub account to browse your repositories and deploy seamlessly.
+            </p>
+            <Button onClick={connectGithub} variant="secondary" className="gap-2">
+                  <GithubIcon className="w-4 h-4" />
+              Connect GitHub Account
+            </Button>
+          </Card>
+        ) : (
+          <Card className="flex flex-col overflow-hidden">
+            <div className="p-4 border-b border-border bg-surface/50">
+              <div className="flex items-center justify-between mb-4">
+                <div className="flex items-center gap-2 text-sm font-medium">
+              <GithubIcon className="w-4 h-4" />
+                  <span>{ghUser}</span>
+                </div>
+              </div>
+              <div className="relative">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-textMuted" />
+                <Input
+                  placeholder={loadingRepos ? 'Loading repositories...' : 'Search repositories...'}
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  disabled={loadingRepos}
+                  className="pl-9 bg-background"
+                />
+              </div>
+            </div>
+
+            <div className="flex-1 overflow-y-auto max-h-[400px] bg-background">
               {loadingRepos && repos.length === 0 ? (
-                <div style={{ padding: 20, color: '#8b949e', fontSize: 13, textAlign: 'center' }}>Loading...</div>
+                <div className="flex items-center justify-center py-12 text-textMuted gap-2">
+                  <Spinner /> Loading...
+                </div>
               ) : filteredRepos.length === 0 ? (
-                <div style={{ padding: 20, color: '#8b949e', fontSize: 13, textAlign: 'center' }}>
+                <div className="text-center py-12 text-textMuted">
                   {repos.length === 0 ? 'No repositories found.' : 'No matching repos.'}
                 </div>
               ) : (
-                filteredRepos.slice(0, 50).map((repo) => {
-                  const key = repo.full_name
-                  const fw: FrameworkInfo = frameworks[key] || { framework: null, color: null, pm: 'unknown' }
-                  const badge = fw.framework ? FRAMEWORK_BADGES[fw.framework] : null
-                  const isSelected = selectedRepo?.id === repo.id
-                  return (
-                    <button
-                      key={repo.id}
-                      type="button"
-                      onClick={() => selectRepo(repo)}
-                      style={{
-                        width: '100%', textAlign: 'left',
-                        padding: '12px 14px', background: isSelected ? '#161b22' : 'transparent',
-                        border: 'none', borderBottom: '1px solid #21262d',
-                        color: '#c9d1d9', cursor: 'pointer', display: 'flex',
-                        justifyContent: 'space-between', alignItems: 'center',
-                        transition: 'background 0.1s',
-                      }}
-                    >
-                      <div>
-                        <div style={{ fontSize: 14, fontWeight: 500 }}>{repo.full_name}</div>
-                        <div style={{ fontSize: 11, color: '#8b949e', marginTop: 2 }}>
-                          {repo.private ? '🔒 Private' : '🌐 Public'}
-                          {repo.description && ` · ${repo.description.slice(0, 60)}${repo.description.length > 60 ? '...' : ''}`}
+                <div className="divide-y divide-border">
+                  {filteredRepos.slice(0, 50).map((repo) => {
+                    const key = repo.full_name
+                    const fw = frameworks[key] || { framework: null, color: null, pm: 'unknown' }
+                    const badge = fw.framework ? FRAMEWORK_BADGES[fw.framework] : null
+                    const isSelected = selectedRepo?.id === repo.id
+
+                    return (
+                      <button
+                        key={repo.id}
+                        onClick={() => selectRepo(repo)}
+                        className={cn(
+                          "w-full text-left px-4 py-3 flex items-center justify-between transition-colors hover:bg-surface",
+                          isSelected && "bg-surface border-l-2 border-l-primary"
+                        )}
+                      >
+                        <div className="flex items-center gap-3 overflow-hidden">
+                          {repo.private ? <Lock className="w-4 h-4 text-textMuted flex-shrink-0" /> : <Globe className="w-4 h-4 text-textMuted flex-shrink-0" />}
+                          <div className="truncate">
+                            <span className={cn("font-medium", isSelected && "text-primary")}>
+                              {repo.full_name}
+                            </span>
+                            <div className="text-xs text-textMuted truncate mt-0.5">
+                              {repo.description || 'No description'}
+                            </div>
+                          </div>
                         </div>
-                      </div>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
-                        {badge ? (
-                          <span style={{
-                            display: 'inline-flex', alignItems: 'center', gap: 4,
-                            padding: '3px 10px', borderRadius: 12, fontSize: 11, fontWeight: 600,
-                            background: `${badge.bg}20`, color: badge.bg === '#000000' ? '#8b949e' : badge.bg,
-                            border: `1px solid ${badge.bg}40`,
-                          }}>
-                            {badge.icon} {fw.framework}
-                          </span>
-                        ) : fw.pm !== 'unknown' && fw.pm !== 'none' ? (
-                          <span style={{
-                            display: 'inline-flex', alignItems: 'center', gap: 4,
-                            padding: '3px 10px', borderRadius: 12, fontSize: 11, fontWeight: 500,
-                            background: '#21262d', color: '#8b949e', border: '1px solid #30363d',
-                          }}>
-                            {fw.pm}
-                          </span>
-                        ) : (
-                          <span style={{ fontSize: 11, color: '#484f58' }}>—</span>
-                        )}
-                        {detectingFw && !frameworks[key] && (
-                          <span style={{ fontSize: 11, color: '#484f58' }}>...</span>
-                        )}
-                      </div>
+                        
+                        <div className="flex items-center gap-2 pl-4 flex-shrink-0">
+                          {badge && fw.framework ? (
+                            <Badge variant={badge.bg}>{fw.framework}</Badge>
+                          ) : fw.pm !== 'unknown' && fw.pm !== 'none' ? (
+                            <Badge variant="outline" className="text-[10px] uppercase">{fw.pm}</Badge>
+                          ) : null}
+                          {detectingFw && !frameworks[key] && <Spinner className="w-3 h-3 text-textMuted" />}
+                        </div>
+                      </button>
+                    )
+                  })}
+                  {repos.length >= repoPage * 50 && (
+                    <button
+                      onClick={loadMoreRepos}
+                      disabled={loadingRepos}
+                      className="w-full py-4 text-sm font-medium text-info hover:bg-surface transition-colors flex items-center justify-center gap-2"
+                    >
+                      {loadingRepos ? <Spinner /> : 'Load more repositories'}
                     </button>
-                  )
-                })
-              )}
-              {repos.length >= repoPage * 50 && (
-                <button
-                  type="button"
-                  onClick={loadMoreRepos}
-                  disabled={loadingRepos}
-                  style={{
-                    width: '100%', padding: '12px', background: 'transparent', border: 'none',
-                    color: '#58a6ff', fontSize: 13, cursor: 'pointer',
-                  }}
-                >
-                  {loadingRepos ? 'Loading...' : 'Load more repositories'}
-                </button>
+                  )}
+                </div>
               )}
             </div>
-            {ghUser && (
-              <div style={{ fontSize: 11, color: '#484f58', marginTop: 6 }}>
-                Connected as {ghUser}
-              </div>
-            )}
-          </div>
+          </Card>
+        )}
+      </div>
 
-          {/* Selected repo details */}
-          {selectedRepo && (
-            <>
-              <div style={{
-                padding: 14, background: detecting ? '#161b22' : '#0d2b1a',
-                borderRadius: 8, border: detecting ? '1px solid #21262d' : '1px solid #238636',
-                marginBottom: 20, fontSize: 13, color: detecting ? '#8b949e' : '#3fb950',
-              }}>
-                {detecting ? 'Detecting project configuration...' : (
-                  `Selected: ${selectedRepo.full_name}`
-                )}
+      {/* Right Column: Configuration & Cost */}
+      {selectedRepo && (
+        <div className="w-full lg:w-[420px] space-y-6">
+          
+          <Card className="overflow-hidden border-primary/20">
+            <div className="p-4 bg-primary/10 border-b border-primary/10 flex items-center gap-3">
+              <div className="w-8 h-8 rounded-full bg-primary/20 flex items-center justify-center text-primary">
+                <Rocket className="w-4 h-4" />
               </div>
+              <div>
+                <h3 className="font-semibold text-primary">Configuration</h3>
+                <p className="text-xs text-primary/70">{selectedRepo.full_name}</p>
+              </div>
+            </div>
+
+            <div className="p-5 space-y-5">
+              
+              {detecting && (
+                <div className="flex items-center gap-3 text-sm text-warning bg-warning/10 p-3 rounded-lg">
+                  <Spinner className="text-warning" />
+                  Detecting project settings...
+                </div>
+              )}
 
               {detectError && (
-                <div style={{
-                  padding: 14, background: '#490202', border: '1px solid #f85149',
-                  borderRadius: 8, color: '#f85149', fontSize: 13, marginBottom: 20,
-                }}>
+                <div className="text-sm text-danger bg-danger/10 p-3 rounded-lg border border-danger/20">
                   {detectError}
                 </div>
               )}
 
-              {/* Multiple project folders */}
+              {/* Multiple Projects Selection */}
               {projects.length > 1 && (
-                <div style={{ marginBottom: 20 }}>
-                  <label style={{ display: 'block', fontSize: 13, color: '#8b949e', marginBottom: 8, fontWeight: 500 }}>
-                    Select Project Folder
-                  </label>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                <div className="space-y-2">
+                  <label className="text-xs font-semibold text-textMuted uppercase tracking-wider">Select Project Folder</label>
+                  <div className="grid gap-2">
                     {projects.map((p) => (
                       <button
                         key={p.folder}
-                        type="button"
                         onClick={() => selectProjFolder(p.folder)}
-                        style={{
-                          textAlign: 'left', padding: '12px 14px',
-                          background: selectedFolder === p.folder ? '#1f2937' : '#161b22',
-                          border: selectedFolder === p.folder ? '1px solid #58a6ff' : '1px solid #21262d',
-                          borderRadius: 8, color: '#c9d1d9',
-                        }}
+                        className={cn(
+                          "text-left p-3 rounded-lg border transition-all",
+                          selectedFolder === p.folder 
+                            ? "bg-info/10 border-info text-white" 
+                            : "bg-surface border-border hover:border-info/50"
+                        )}
                       >
-                        <div style={{ fontSize: 14, fontWeight: 500 }}>
-                          {p.folder === '.' ? 'Root' : p.folder}
-                          {p.framework && <span style={{ color: '#58a6ff', fontSize: 12, marginLeft: 8 }}>({p.framework})</span>}
+                        <div className="flex items-center gap-2 font-medium text-sm mb-1">
+                          <Package className="w-4 h-4 text-textMuted" />
+                          {p.folder === '.' ? 'Root Directory' : p.folder}
+                          {p.framework && <Badge variant="info" className="ml-auto">{p.framework}</Badge>}
                         </div>
-                        <div style={{ fontSize: 11, color: '#8b949e', marginTop: 3 }}>
-                          {p.packageManager} · build: {p.buildCommand} · output: {p.outputDir}
+                        <div className="text-xs text-textMuted font-mono">
+                          {p.packageManager} • {p.buildCommand}
                         </div>
                       </button>
                     ))}
@@ -431,179 +454,155 @@ export default function Deploy() {
                 </div>
               )}
 
-              {/* Branch + Network */}
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14, marginBottom: 16 }}>
-                <div>
-                  <label style={{ display: 'block', fontSize: 12, color: '#8b949e', marginBottom: 5, fontWeight: 500 }}>Branch</label>
-                  {branches.length > 0 ? (
-                    <select value={branch} onChange={(e) => setBranch(e.target.value)}>
-                      {branches.map((b) => <option key={b} value={b}>{b}</option>)}
-                    </select>
-                  ) : (
-                    <input type="text" value={branch} onChange={(e) => setBranch(e.target.value)} />
-                  )}
-                </div>
-                <div>
-                  <label style={{ display: 'block', fontSize: 12, color: '#8b949e', marginBottom: 5, fontWeight: 500 }}>Network</label>
-                  <select value={network} onChange={(e) => setNetwork(e.target.value as 'mainnet' | 'testnet')}>
+              {/* Network & Branch */}
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-1.5">
+                  <label className="text-xs font-semibold text-textMuted uppercase tracking-wider">Network</label>
+                  <select 
+                    value={network} 
+                    onChange={(e) => setNetwork(e.target.value as 'mainnet' | 'testnet')}
+                    className="w-full h-10 px-3 bg-surface border border-border rounded-md text-sm focus:outline-none focus:ring-1 focus:ring-primary appearance-none"
+                  >
                     <option value="testnet">🧪 Testnet</option>
                     <option value="mainnet">🌐 Mainnet</option>
                   </select>
                 </div>
+                <div className="space-y-1.5">
+                  <label className="text-xs font-semibold text-textMuted uppercase tracking-wider">Branch</label>
+                  {branches.length > 0 ? (
+                    <select 
+                      value={branch} 
+                      onChange={(e) => setBranch(e.target.value)}
+                      className="w-full h-10 px-3 bg-surface border border-border rounded-md text-sm focus:outline-none focus:ring-1 focus:ring-primary appearance-none"
+                    >
+                      {branches.map((b) => <option key={b} value={b}>{b}</option>)}
+                    </select>
+                  ) : (
+                    <Input value={branch} onChange={(e) => setBranch(e.target.value)} />
+                  )}
+                </div>
               </div>
 
-              {/* Epochs */}
-              <div style={{ marginBottom: 16 }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 5 }}>
-                  <label style={{ fontSize: 12, color: '#8b949e', fontWeight: 500 }}>Epochs</label>
-                  <span style={{ fontSize: 12, color: '#58a6ff', fontWeight: 600 }}>
-                    {network === 'mainnet' ? 'max' : epochs}
+              {/* Epochs Slider */}
+              <div className="space-y-3">
+                <div className="flex justify-between items-center">
+                  <label className="text-xs font-semibold text-textMuted uppercase tracking-wider">Storage Epochs</label>
+                  <span className="text-sm font-bold text-info">
+                    {network === 'mainnet' ? 'Max' : epochs}
                   </span>
                 </div>
                 {network === 'mainnet' ? (
-                  <input type="text" value="max (no limit)" disabled
-                    style={{ opacity: 0.6 }} />
+                  <div className="h-2 bg-surface rounded-full overflow-hidden">
+                    <div className="h-full bg-info/50 w-full"></div>
+                  </div>
                 ) : (
                   <input
                     type="range"
                     min={1} max={7} step={1}
                     value={epochs}
                     onChange={(e) => setEpochs(Number(e.target.value))}
-                    style={{ width: '100%', padding: 0, height: 24, accentColor: '#58a6ff' }}
+                    className="w-full accent-info"
                   />
                 )}
-                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: '#484f58', marginTop: 2 }}>
-                  {network === 'testnet' && (
-                    <>
-                      <span>1</span>
-                      <span>2</span>
-                      <span>3</span>
-                      <span>4</span>
-                      <span>5</span>
-                      <span>6</span>
-                      <span>7</span>
-                    </>
-                  )}
-                </div>
               </div>
 
-              {/* Cost estimation */}
-              <div style={{ marginBottom: 20 }}>
-                {!estimate ? (
-                  <button
-                    type="button"
-                    onClick={handleEstimate}
-                    disabled={estimating || !selectedRepo}
-                    style={{
-                      width: '100%', padding: '10px', fontSize: 13, fontWeight: 500,
-                      background: estimating ? '#21262d' : '#1f2937',
-                      color: estimating ? '#484f58' : '#58a6ff',
-                      border: '1px solid #30363d', borderRadius: 6,
-                      cursor: estimating || !selectedRepo ? 'not-allowed' : 'pointer',
-                    }}
-                  >
-                    {estimating ? 'Building to calculate cost...' : '🧮 Calculate Cost'}
-                  </button>
-                ) : (
-                  <div style={{
-                    padding: 14, background: '#0d1a2b', borderRadius: 8,
-                    border: '1px solid #1f6feb30', fontSize: 13, color: '#c9d1d9',
-                  }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
-                      <span style={{ color: '#8b949e' }}>Output size</span>
-                      <span style={{ fontWeight: 600 }}>
-                        {estimate.totalBytes < 1024 * 1024
-                          ? `${(estimate.totalBytes / 1024).toFixed(1)} KB`
-                          : `${(estimate.totalBytes / (1024 * 1024)).toFixed(2)} MB`}
-                        {' · '}{estimate.fileCount} files
-                      </span>
-                    </div>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
-                      <span style={{ color: '#8b949e' }}>Epochs</span>
-                      <span style={{ fontWeight: 600 }}>{estimate.epochs}</span>
-                    </div>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
-                      <span style={{ color: '#8b949e' }}>Est. WAL</span>
-                      <span style={{ fontWeight: 600, color: '#d29922' }}>
-                        {estimate.estimatedWal < 0.01 ? '<0.01' : estimate.estimatedWal.toFixed(2)} WAL
-                      </span>
-                    </div>
-                    <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                      <span style={{ color: '#8b949e' }}>Est. SUI gas</span>
-                      <span style={{ fontWeight: 600, color: '#58a6ff' }}>
-                        ~{estimate.estimatedSuiGas} SUI
-                      </span>
-                    </div>
-                    <div style={{ fontSize: 10, color: '#484f58', marginTop: 6, borderTop: '1px solid #21262d', paddingTop: 6 }}>
-                      {estimate.formula}
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => setEstimate(null)}
-                      style={{
-                        marginTop: 8, background: 'transparent', color: '#8b949e',
-                        border: 'none', cursor: 'pointer', fontSize: 11, textDecoration: 'underline',
-                      }}
-                    >
-                      Recalculate
-                    </button>
-                  </div>
-                )}
-              </div>
+              {/* Advanced Settings Toggle */}
+              <button 
+                onClick={() => setShowAdvanced(!showAdvanced)}
+                className="flex items-center gap-2 text-sm font-medium text-textMuted hover:text-white transition-colors py-2"
+              >
+                <Settings2 className="w-4 h-4" />
+                Build Settings
+                <ChevronDown className={cn("w-4 h-4 transition-transform ml-auto", showAdvanced && "rotate-180")} />
+              </button>
 
-              {/* Build config */}
-              <details style={{ color: '#8b949e', marginBottom: 20 }}>
-                <summary style={{ fontSize: 12, cursor: 'pointer', color: '#58a6ff', fontWeight: 500 }}>
-                  Build configuration
-                </summary>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 12 }}>
-                  <div>
-                    <label style={{ display: 'block', fontSize: 11, color: '#8b949e', marginBottom: 3 }}>Base Directory</label>
-                    <input type="text" value={baseDir} onChange={(e) => setBaseDir(e.target.value)} placeholder="." />
+              {/* Advanced Settings Form */}
+              {showAdvanced && (
+                <div className="space-y-4 pt-2 border-t border-border/50">
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-medium text-textMuted">Site Name (Optional)</label>
+                    <Input value={siteName} onChange={(e) => setSiteName(e.target.value)} placeholder="my-awesome-site" />
                   </div>
-                  <div>
-                    <label style={{ display: 'block', fontSize: 11, color: '#8b949e', marginBottom: 3 }}>Install Command</label>
-                    <input type="text" value={installCmd} onChange={(e) => setInstallCmd(e.target.value)} />
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-medium text-textMuted">Base Directory</label>
+                    <Input value={baseDir} onChange={(e) => setBaseDir(e.target.value)} placeholder="." className="font-mono text-sm" />
                   </div>
-                  <div>
-                    <label style={{ display: 'block', fontSize: 11, color: '#8b949e', marginBottom: 3 }}>Build Command</label>
-                    <input type="text" value={buildCmd} onChange={(e) => setBuildCmd(e.target.value)} />
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-medium text-textMuted">Install Command</label>
+                    <Input value={installCmd} onChange={(e) => setInstallCmd(e.target.value)} placeholder="npm install" className="font-mono text-sm" />
                   </div>
-                  <div>
-                    <label style={{ display: 'block', fontSize: 11, color: '#8b949e', marginBottom: 3 }}>Output Directory</label>
-                    <input type="text" value={outputDir} onChange={(e) => setOutputDir(e.target.value)} placeholder="dist" />
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-medium text-textMuted">Build Command</label>
+                    <Input value={buildCmd} onChange={(e) => setBuildCmd(e.target.value)} placeholder="npm run build" className="font-mono text-sm" />
                   </div>
-                  <div>
-                    <label style={{ display: 'block', fontSize: 11, color: '#8b949e', marginBottom: 3 }}>Site Name (optional)</label>
-                    <input type="text" value={siteName} onChange={(e) => setSiteName(e.target.value)} placeholder="My Site" />
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-medium text-textMuted">Output Directory</label>
+                    <Input value={outputDir} onChange={(e) => setOutputDir(e.target.value)} placeholder="dist" className="font-mono text-sm" />
                   </div>
                 </div>
-              </details>
+              )}
 
               {error && (
-                <div style={{
-                  padding: 12, background: '#490202', border: '1px solid #f85149',
-                  borderRadius: 6, color: '#f85149', fontSize: 13, marginBottom: 16,
-                }}>
+                <div className="text-sm text-danger bg-danger/10 p-3 rounded-lg border border-danger/20 flex items-start gap-2">
+                  <TerminalSquare className="w-4 h-4 mt-0.5 flex-shrink-0" />
                   {error}
                 </div>
               )}
 
-              <button
+              {/* Cost Estimator */}
+              <div className="pt-4 border-t border-border">
+                {!estimate ? (
+                  <Button
+                    variant="secondary"
+                    className="w-full border-dashed bg-surface/50"
+                    onClick={handleEstimate}
+                    disabled={estimating || !selectedRepo || detecting}
+                  >
+                    {estimating ? <Spinner className="mr-2" /> : <FileCode2 className="w-4 h-4 mr-2" />}
+                    {estimating ? 'Calculating Cost...' : 'Calculate Storage Cost'}
+                  </Button>
+                ) : (
+                  <div className="bg-[#0d1a2b] rounded-lg border border-info/30 p-4 text-sm">
+                    <div className="flex justify-between mb-2">
+                      <span className="text-textMuted">Output Size</span>
+                      <span className="font-semibold text-white">
+                        {estimate.totalBytes < 1024 * 1024
+                          ? `${(estimate.totalBytes / 1024).toFixed(1)} KB`
+                          : `${(estimate.totalBytes / (1024 * 1024)).toFixed(2)} MB`}
+                      </span>
+                    </div>
+                    <div className="flex justify-between mb-2">
+                      <span className="text-textMuted">Est. WAL</span>
+                      <span className="font-semibold text-warning">
+                        {estimate.estimatedWal < 0.01 ? '<0.01' : estimate.estimatedWal.toFixed(2)} WAL
+                      </span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-textMuted">Est. SUI Gas</span>
+                      <span className="font-semibold text-info">~{estimate.estimatedSuiGas} SUI</span>
+                    </div>
+                    <div className="mt-3 pt-3 border-t border-info/20 text-xs text-textMuted font-mono text-center">
+                      <button onClick={() => setEstimate(null)} className="hover:text-white underline decoration-textMuted/50">
+                        Recalculate
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <Button
+                size="lg"
+                className="w-full font-bold text-base shadow-lg shadow-primary/20"
                 onClick={handleDeploy}
-                disabled={submitting || detecting || projects.length > 1 && !selectedFolder}
-                style={{
-                  width: '100%', padding: '14px', fontSize: 16, fontWeight: 700,
-                  background: submitting || detecting ? '#21262d' : '#238636',
-                  color: submitting || detecting ? '#8b949e' : '#fff',
-                  borderRadius: 8, border: 'none', cursor: submitting ? 'not-allowed' : 'pointer',
-                }}
+                disabled={submitting || detecting || (projects.length > 1 && !selectedFolder)}
               >
-                {submitting ? 'Deploying...' : detecting ? 'Detecting...' : 'Deploy to Walrus'}
-              </button>
-            </>
-          )}
-        </>
+                {submitting ? <Spinner className="mr-2" /> : <Rocket className="w-5 h-5 mr-2" />}
+                {submitting ? 'Deploying...' : 'Deploy to Walrus'}
+              </Button>
+
+            </div>
+          </Card>
+        </div>
       )}
     </div>
   )

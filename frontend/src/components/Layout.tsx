@@ -1,54 +1,54 @@
-import { Link, useNavigate } from 'react-router-dom'
+import { Link, useNavigate, useLocation } from 'react-router-dom'
 import { ConnectButton } from '@mysten/dapp-kit'
 import { useAuth } from '../hooks/useAuth'
 import WalletFooter from './WalletFooter'
 import type { ReactNode } from 'react'
+import { cn } from '../lib/utils'
+import { Box } from 'lucide-react'
 
 export default function Layout({ children }: { children: ReactNode }) {
   const { account, isAuthenticated, logout } = useAuth()
   const navigate = useNavigate()
 
   return (
-    <div style={{ maxWidth: 960, margin: '0 auto', padding: '20px 16px' }}>
-      <header style={{
-        display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-        padding: '14px 0', borderBottom: '1px solid #21262d', marginBottom: 36,
-      }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 28 }}>
-          <Link to="/" style={{ fontSize: 22, fontWeight: 800, color: '#f0f6fc', textDecoration: 'none', letterSpacing: -0.5 }}>
-            🧊 Glacier
+    <div className="min-h-screen flex flex-col max-w-5xl mx-auto px-4 sm:px-6 lg:px-8">
+      <header className="flex items-center justify-between py-6 border-b border-border mb-8">
+        <div className="flex items-center gap-8">
+          <Link to="/" className="flex items-center gap-2 text-2xl font-bold text-text hover:text-white transition-colors">
+            <Box className="w-8 h-8 text-primary" />
+            <span className="tracking-tight">Glacier</span>
           </Link>
+          
           {isAuthenticated && (
-            <nav style={{ display: 'flex', gap: 20 }}>
+            <nav className="hidden md:flex gap-6">
               <NavLink to="/dashboard">Dashboard</NavLink>
               <NavLink to="/deploy">Deploy</NavLink>
             </nav>
           )}
         </div>
 
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+        <div className="flex items-center gap-4">
           {isAuthenticated ? (
-            <>
-              <span style={{ fontSize: 12, color: '#8b949e' }}>
+            <div className="flex items-center gap-3 bg-surface px-3 py-1.5 rounded-full border border-border">
+              <div className="w-2 h-2 rounded-full bg-success"></div>
+              <span className="text-sm font-medium text-textMuted">
                 {account?.address?.slice(0, 6)}...{account?.address?.slice(-4)}
               </span>
+              <div className="w-px h-4 bg-border mx-1"></div>
               <button
                 onClick={() => { logout(); navigate('/') }}
-                style={{
-                  background: '#21262d', color: '#c9d1d9', fontSize: 12, fontWeight: 500,
-                  border: '1px solid #30363d', borderRadius: 6, padding: '6px 14px',
-                }}
+                className="text-sm font-medium text-textMuted hover:text-text transition-colors"
               >
                 Disconnect
               </button>
-            </>
+            </div>
           ) : (
-            <ConnectButton connectText="Connect Wallet" />
+            <ConnectButton />
           )}
         </div>
       </header>
 
-      <main>{children}</main>
+      <main className="flex-1 w-full">{children}</main>
 
       <WalletFooter />
     </div>
@@ -56,15 +56,15 @@ export default function Layout({ children }: { children: ReactNode }) {
 }
 
 function NavLink({ to, children }: { to: string; children: ReactNode }) {
-  const isActive = typeof window !== 'undefined' && window.location.pathname === to
+  const location = useLocation()
+  const isActive = location.pathname === to
   return (
     <Link
       to={to}
-      style={{
-        fontSize: 14, fontWeight: isActive ? 600 : 400,
-        color: isActive ? '#f0f6fc' : '#8b949e',
-        textDecoration: 'none', transition: 'color 0.15s',
-      }}
+      className={cn(
+        "text-sm font-medium transition-colors hover:text-white",
+        isActive ? "text-white" : "text-textMuted"
+      )}
     >
       {children}
     </Link>
