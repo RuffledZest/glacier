@@ -1,0 +1,53 @@
+{
+  "$schema": "https://raw.githubusercontent.com/cloudflare/workers-sdk/main/packages/wrangler/config-schema.json",
+  "name": "glacier",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-05-08",
+  "compatibility_flags": ["nodejs_compat"],
+
+  "containers": [
+    {
+      "class_name": "BuildContainer",
+      "image": "./Dockerfile",
+      "max_instances": 10,
+      "instance_type": {
+        "vcpu": 1,
+        "memory_mib": 6144,
+        "disk_mb": 12288
+      }
+    }
+  ],
+
+  "durable_objects": {
+    "bindings": [
+      {
+        "class_name": "BuildContainer",
+        "name": "BUILD_CONTAINER"
+      }
+    ]
+  },
+
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["BuildContainer"]
+    }
+  ],
+
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "glacier-db",
+      "database_id": "f843c3ef-d25a-4600-ad73-627efd8878ac"
+    }
+  ],
+
+  "observability": {
+    "enabled": true
+  },
+
+  "vars": {
+    "WALRUS_NETWORK": "testnet",
+    "WALRUS_EPOCHS": "1"
+  }
+}
