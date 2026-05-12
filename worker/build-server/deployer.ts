@@ -460,28 +460,40 @@ export async function deployToWalrus(params: DeployParams): Promise<DeployResult
     let objectId: string | undefined
     let base36Url: string | undefined
 
+    // 8a. Parse CI output file written by walrus-deploy
     const outputFile = '/tmp/walrus-deploy-output.txt'
     if (existsSync(outputFile)) {
       const output = readFileSync(outputFile, 'utf-8')
       for (const line of output.split('\n')) {
-        if (line.startsWith('OBJECT_ID=')) objectId = line.split('=')[1]?.trim()
-        if (line.startsWith('BASE36_URL=')) base36Url = line.split('=')[1]?.trim()
+        if (line.toLowerCase().startsWith('object id:')) {
+          objectId = line.split(':').slice(1).join(':').trim()
+        }
+        if (line.toLowerCase().startsWith('base36:')) {
+          base36Url = line.split(':').slice(1).join(':').trim()
+        }
       }
     }
 
-    if (!objectId || !base36Url) {
+    // 8b. Fallback: parse from stdout/stderr
+    if (!objectId) {
       const combined = stdout + '\n' + stderr
-      const objectMatch = combined.match(/Object ID:\s*([a-f0-9]+)/i)
-                        || combined.match(/([a-f0-9]{64})/)
+      const objectMatch = combined.match(/New site object ID:\s*(0x[a-f0-9]+)/i)
+                        || combined.match(/Object ID:\s*(0x[a-f0-9]+)/i)
+                        || combined.match(/(0x[a-f0-9]{64})/)
       if (objectMatch) objectId = objectMatch[1]
+    }
 
-      const urlMatch = combined.match(/https?:\/\/[^\s]+\.wal\.app[^\s]*/i)
-                     || combined.match(/([a-z0-9]+\.wal\.app)/i)
-                     || combined.match(/Base36[:\s]+([a-z0-9]+)/i)
-      if (urlMatch) base36Url = urlMatch[0]
+    if (!base36Url) {
+      const combined = stdout + '\n' + stderr
+      // Match Base36: <value> or the base36 URL from portal instructions
+      const base36Match = combined.match(/Base36[:\s]+([a-z0-9]+)/i)
+                       || combined.match(/http:\/\/([a-z0-9]+)\.localhost:3000/i)
+      if (base36Match) base36Url = base36Match[1]
     }
 
     if (!objectId) {
+      log('DEBUG: Could not parse objectId. stdout/stderr snapshot:')
+      log((stdout + '\n' + stderr).slice(0, 2000))
       return { success: false, error: 'could not extract object ID from deploy output', logs }
     }
 
