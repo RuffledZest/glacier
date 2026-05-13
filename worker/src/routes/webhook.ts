@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import { getContainer } from '@cloudflare/containers'
 import type { Env } from '..'
-import { createDeployment, updateDeployment, getDeployment, getDb } from '../db'
+import { createDeployment, updateDeployment, getDeployment, getDb, upsertProject } from '../db'
 import type { BuildRequest, DeployCommand } from '../types'
 import { detectFromGithubApi } from '../auto-detect'
 
@@ -104,6 +104,17 @@ router.post('/github', async (c) => {
   } catch {
     // Detection failed — will retry post-clone
   }
+
+  await upsertProject(db, {
+    userAddress,
+    repoUrl,
+    branch,
+    baseDir,
+    installCommand: installCommand || null,
+    buildCommand: buildCommand || null,
+    outputDir: outputDir || null,
+    network: network as 'mainnet' | 'testnet',
+  })
 
   const deploymentId = `gh-${deliveryId || crypto.randomUUID()}`
 
@@ -256,7 +267,8 @@ router.post('/github', async (c) => {
 
         if (!deployResult.success) {
           const currentDeploy = await getDeployment(db, deploymentId)
-          const combinedLogs = (currentDeploy?.logs || '') + '\n--- Deploy ---\n' + (deployResult.logs || []).join('\n')
+          const deployLogs = Array.isArray(deployResult.logs) ? deployResult.logs.join('\n') : String(deployResult.logs || '')
+          const combinedLogs = (currentDeploy?.logs || '') + '\n--- Deploy ---\n' + deployLogs
           await updateDeployment(db, deploymentId, {
             status: 'failed',
             error: deployResult.error || 'deploy failed',
@@ -266,7 +278,8 @@ router.post('/github', async (c) => {
         }
 
         const currentDeploy = await getDeployment(db, deploymentId)
-        const combinedLogs = (currentDeploy?.logs || '') + '\n--- Deploy ---\n' + (deployResult.logs || []).join('\n')
+        const deployLogs = Array.isArray(deployResult.logs) ? deployResult.logs.join('\n') : String(deployResult.logs || '')
+        const combinedLogs = (currentDeploy?.logs || '') + '\n--- Deploy ---\n' + deployLogs
         await updateDeployment(db, deploymentId, {
           status: 'deployed',
           objectId: deployResult.objectId || null,

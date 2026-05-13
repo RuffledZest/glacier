@@ -19,6 +19,20 @@ export interface DeployRequest {
   siteName?: string
 }
 
+export interface Project {
+  id: string
+  userAddress: string
+  repoUrl: string
+  branch: string
+  baseDir: string
+  installCommand: string | null
+  buildCommand: string | null
+  outputDir: string | null
+  network: 'mainnet' | 'testnet'
+  createdAt: string
+  updatedAt: string
+}
+
 export interface Deployment {
   id: string
   userAddress: string

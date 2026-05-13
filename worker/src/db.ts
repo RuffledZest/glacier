@@ -1,13 +1,135 @@
 import type { D1Database } from '@cloudflare/workers-types'
 import type { Context } from 'hono'
 import type { Env } from './index'
-import type { Deployment } from './types'
+import type { Deployment, Project } from './types'
 
 type Ctx = Context<{ Bindings: Env }>
 
 export function getDb(c: Ctx): D1Database {
   return c.env.DB
 }
+
+// ── Projects ──
+
+export async function upsertProject(
+  db: D1Database,
+  project: Omit<Project, 'id' | 'createdAt' | 'updatedAt'>
+): Promise<string> {
+  const existing = await db
+    .prepare('SELECT id FROM projects WHERE user_address = ?1 AND repo_url = ?2')
+    .bind(project.userAddress, project.repoUrl)
+    .first<{ id: string }>()
+
+  if (existing) {
+    await db
+      .prepare(
+        `UPDATE projects SET
+         branch = ?1, base_dir = ?2, install_command = ?3, build_command = ?4,
+         output_dir = ?5, network = ?6, updated_at = datetime('now')
+         WHERE id = ?7`
+      )
+      .bind(
+        project.branch,
+        project.baseDir,
+        project.installCommand ?? null,
+        project.buildCommand ?? null,
+        project.outputDir ?? null,
+        project.network,
+        existing.id
+      )
+      .run()
+    return existing.id
+  }
+
+  const id = crypto.randomUUID()
+  await db
+    .prepare(
+      `INSERT INTO projects
+       (id, user_address, repo_url, branch, base_dir, install_command, build_command, output_dir, network)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)`
+    )
+    .bind(
+      id,
+      project.userAddress,
+      project.repoUrl,
+      project.branch,
+      project.baseDir,
+      project.installCommand ?? null,
+      project.buildCommand ?? null,
+      project.outputDir ?? null,
+      project.network
+    )
+    .run()
+  return id
+}
+
+export async function getProject(db: D1Database, id: string): Promise<Project | null> {
+  const result = await db
+    .prepare('SELECT * FROM projects WHERE id = ?1')
+    .bind(id)
+    .first<Record<string, unknown>>()
+
+  if (!result) return null
+  return mapProjectRow(result)
+}
+
+export async function getProjectByRepo(
+  db: D1Database,
+  userAddress: string,
+  repoUrl: string
+): Promise<Project | null> {
+  const result = await db
+    .prepare('SELECT * FROM projects WHERE user_address = ?1 AND repo_url = ?2')
+    .bind(userAddress, repoUrl)
+    .first<Record<string, unknown>>()
+
+  if (!result) return null
+  return mapProjectRow(result)
+}
+
+export async function getProjects(db: D1Database, userAddress: string): Promise<Project[]> {
+  const result = await db
+    .prepare('SELECT * FROM projects WHERE user_address = ?1 ORDER BY updated_at DESC')
+    .bind(userAddress)
+    .all<Record<string, unknown>>()
+
+  return (result.results ?? []).map(mapProjectRow)
+}
+
+export async function deleteProject(db: D1Database, id: string, userAddress: string): Promise<void> {
+  const project = await getProject(db, id)
+  if (!project || project.userAddress !== userAddress) return
+
+  // Mark all associated deployments as deleted
+  await db
+    .prepare("UPDATE deployments SET status = 'deleted', updated_at = datetime('now') WHERE repo_url = ?1 AND user_address = ?2")
+    .bind(project.repoUrl, userAddress)
+    .run()
+
+  // Delete the project
+  await db
+    .prepare('DELETE FROM projects WHERE id = ?1')
+    .bind(id)
+    .run()
+}
+
+function mapProjectRow(row: Record<string, unknown>): Project {
+  return {
+    id: row.id as string,
+    userAddress: row.user_address as string,
+    repoUrl: row.repo_url as string,
+    branch: row.branch as string,
+    baseDir: row.base_dir as string,
+    installCommand: row.install_command as string | null,
+    buildCommand: row.build_command as string | null,
+    outputDir: row.output_dir as string | null,
+    network: row.network as 'mainnet' | 'testnet',
+    createdAt: row.created_at as string,
+    updatedAt: row.updated_at as string,
+  }
+}
+
+// ── Deployments ──
 
 export async function createDeployment(
   db: D1Database,
@@ -96,6 +218,21 @@ export async function getDeployments(
       'SELECT * FROM deployments WHERE user_address = ?1 AND status != \'deleted\' ORDER BY created_at DESC LIMIT ?2 OFFSET ?3'
     )
     .bind(userAddress, limit, offset)
+    .all<Record<string, unknown>>()
+
+  return (result.results ?? []).map(mapRow)
+}
+
+export async function getDeploymentsByRepo(
+  db: D1Database,
+  userAddress: string,
+  repoUrl: string
+): Promise<Deployment[]> {
+  const result = await db
+    .prepare(
+      'SELECT * FROM deployments WHERE user_address = ?1 AND repo_url = ?2 AND status != \'deleted\' ORDER BY created_at DESC'
+    )
+    .bind(userAddress, repoUrl)
     .all<Record<string, unknown>>()
 
   return (result.results ?? []).map(mapRow)

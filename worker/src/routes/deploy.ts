@@ -2,7 +2,7 @@ import { Hono } from 'hono'
 import { getContainer } from '@cloudflare/containers'
 import type { Env } from '..'
 import { verifyJwt } from '../auth'
-import { createDeployment, updateDeployment, getDeployment, getDeployments, getDb } from '../db'
+import { createDeployment, updateDeployment, getDeployment, getDeployments, getDb, upsertProject, getProjects, getProject, deleteProject, getDeploymentsByRepo } from '../db'
 import type { DeployRequest, BuildRequest, DeployCommand } from '../types'
 import { detectFromGithubApi } from '../auto-detect'
 
@@ -63,6 +63,18 @@ router.post('/deploy', async (c) => {
       // Detection failed — will retry post-clone in container
     }
   }
+
+  // Upsert project with build config
+  await upsertProject(db, {
+    userAddress: payload.address as string,
+    repoUrl,
+    branch,
+    baseDir,
+    installCommand: installCommand || null,
+    buildCommand: buildCommand || null,
+    outputDir: outputDir || null,
+    network,
+  })
 
   const deploymentId = crypto.randomUUID()
 
@@ -164,18 +176,24 @@ router.post('/deployments/:id/retry', async (c) => {
     return c.json({ error: 'only failed deployments can be retried' }, 400)
   }
 
+  // Get project config (latest) for retry
+  const { getProjectByRepo } = await import('../db')
+  const project = await getProjectByRepo(db, payload.address as string, deployment.repoUrl)
+
   const retryId = crypto.randomUUID()
+
+  const retryConfig = project || deployment
 
   await createDeployment(db, {
     id: retryId,
     userAddress: payload.address as string,
     repoUrl: deployment.repoUrl,
-    branch: deployment.branch,
-    baseDir: deployment.baseDir,
-    installCommand: deployment.installCommand,
-    buildCommand: deployment.buildCommand,
-    outputDir: deployment.outputDir,
-    network: deployment.network,
+    branch: retryConfig.branch,
+    baseDir: retryConfig.baseDir,
+    installCommand: retryConfig.installCommand,
+    buildCommand: retryConfig.buildCommand,
+    outputDir: retryConfig.outputDir,
+    network: retryConfig.network,
     status: 'queued',
     error: null,
     objectId: null,
@@ -270,6 +288,95 @@ router.get('/deployments/:id/logs', async (c) => {
   } catch {
     return c.json({ logs: deployment.logs })
   }
+})
+
+router.get('/deployments', async (c) => {
+  const db = getDb(c)
+
+  const authHeader = c.req.header('Authorization')
+  if (!authHeader?.startsWith('Bearer ')) {
+    return c.json({ error: 'missing authorization header' }, 401)
+  }
+
+  const token = authHeader.slice(7)
+  const payload = await verifyJwt(token, c.env.JWT_SECRET)
+  if (!payload) {
+    return c.json({ error: 'invalid or expired token' }, 401)
+  }
+
+  const limit = Number(c.req.query('limit')) || 20
+  const offset = Number(c.req.query('offset')) || 0
+  const deployments = await getDeployments(db, payload.address as string, limit, offset)
+  return c.json({ deployments })
+})
+
+// ── Projects ──
+
+router.get('/projects', async (c) => {
+  const db = getDb(c)
+
+  const authHeader = c.req.header('Authorization')
+  if (!authHeader?.startsWith('Bearer ')) {
+    return c.json({ error: 'missing authorization header' }, 401)
+  }
+
+  const token = authHeader.slice(7)
+  const payload = await verifyJwt(token, c.env.JWT_SECRET)
+  if (!payload) {
+    return c.json({ error: 'invalid or expired token' }, 401)
+  }
+
+  const projects = await getProjects(db, payload.address as string)
+  return c.json({ projects })
+})
+
+router.get('/projects/:id', async (c) => {
+  const db = getDb(c)
+
+  const authHeader = c.req.header('Authorization')
+  if (!authHeader?.startsWith('Bearer ')) {
+    return c.json({ error: 'missing authorization header' }, 401)
+  }
+
+  const token = authHeader.slice(7)
+  const payload = await verifyJwt(token, c.env.JWT_SECRET)
+  if (!payload) {
+    return c.json({ error: 'invalid or expired token' }, 401)
+  }
+
+  const id = c.req.param('id')
+  const project = await getProject(db, id)
+
+  if (!project) {
+    return c.json({ error: 'project not found' }, 404)
+  }
+
+  if (project.userAddress !== (payload.address as string)) {
+    return c.json({ error: 'not authorized' }, 403)
+  }
+
+  const deployments = await getDeploymentsByRepo(db, payload.address as string, project.repoUrl)
+
+  return c.json({ project, deployments })
+})
+
+router.delete('/projects/:id', async (c) => {
+  const db = getDb(c)
+
+  const authHeader = c.req.header('Authorization')
+  if (!authHeader?.startsWith('Bearer ')) {
+    return c.json({ error: 'missing authorization header' }, 401)
+  }
+
+  const token = authHeader.slice(7)
+  const payload = await verifyJwt(token, c.env.JWT_SECRET)
+  if (!payload) {
+    return c.json({ error: 'invalid or expired token' }, 401)
+  }
+
+  const id = c.req.param('id')
+  await deleteProject(db, id, payload.address as string)
+  return c.json({ success: true })
 })
 
 router.delete('/deployments/:id', async (c) => {
@@ -447,39 +554,77 @@ async function runBuildAndDeploy(
       buildId: deploymentId,
     }
 
-    const deployResponse = await container.fetch(
-      new Request('http://localhost/deploy', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(deployCmd),
-      })
-    )
-
-    if (!deployResponse.ok) {
-      const text = await deployResponse.text().catch(() => '')
-      await updateDeployment(db, deploymentId, {
-        status: 'failed',
-        error: `container deploy returned ${deployResponse.status}: ${text.slice(0, 500)}`,
-      })
-      return
-    }
+    // Poll deploy logs in background so frontend sees live updates
+    let deployLogLen = 0
+    const logPollInterval = setInterval(async () => {
+      try {
+        const logResp = await container.fetch(new Request(`http://localhost/logs/${deploymentId}`))
+        if (logResp.ok) {
+          const logData = await logResp.json() as { logs: string }
+          if (logData.logs && logData.logs.length > deployLogLen) {
+            await updateDeployment(db, deploymentId, { logs: logData.logs })
+            deployLogLen = logData.logs.length
+          }
+        }
+      } catch { /* ignore poll errors */ }
+    }, 3000)
 
     let deployResult: { success: boolean; objectId?: string; base36Url?: string; error?: string; logs?: string[] }
     try {
-      deployResult = await deployResponse.json()
-    } catch {
-      const text = await deployResponse.clone().text().catch(() => 'unknown')
+      const deployResponse = await container.fetch(
+        new Request('http://localhost/deploy', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(deployCmd),
+        })
+      )
+
+      if (!deployResponse.ok) {
+        const text = await deployResponse.text().catch(() => '')
+        clearInterval(logPollInterval)
+        await updateDeployment(db, deploymentId, {
+          status: 'failed',
+          error: `container deploy returned ${deployResponse.status}: ${text.slice(0, 500)}`,
+        })
+        return
+      }
+
+      try {
+        deployResult = await deployResponse.json()
+      } catch {
+        const text = await deployResponse.clone().text().catch(() => 'unknown')
+        clearInterval(logPollInterval)
+        await updateDeployment(db, deploymentId, {
+          status: 'failed',
+          error: `invalid JSON from container deploy: ${text.slice(0, 500)}`,
+        })
+        return
+      }
+    } catch (fetchErr) {
+      clearInterval(logPollInterval)
+      const errMsg = fetchErr instanceof Error ? fetchErr.message : 'deploy fetch failed'
       await updateDeployment(db, deploymentId, {
         status: 'failed',
-        error: `invalid JSON from container deploy: ${text.slice(0, 500)}`,
+        error: `Deploy connection failed: ${errMsg}. The deployment may have been too large or timed out.`,
       })
       return
     }
 
+    clearInterval(logPollInterval)
+
+    // Final log sync
+    try {
+      const finalLogResp = await container.fetch(new Request(`http://localhost/logs/${deploymentId}`))
+      if (finalLogResp.ok) {
+        const finalLogData = await finalLogResp.json() as { logs: string }
+        if (finalLogData.logs) await updateDeployment(db, deploymentId, { logs: finalLogData.logs })
+      }
+    } catch { /* ignore */ }
+
     if (!deployResult.success) {
-      // Get current logs from D1 and append deploy error
       const current = await getDeployment(db, deploymentId)
-      const combinedLogs = (current?.logs || '') + '\n--- Deploy ---\n' + (deployResult.logs || []).join('\n')
+      const deployLogs = Array.isArray(deployResult.logs) ? deployResult.logs.join('\n') : String(deployResult.logs || '')
+      const combinedLogs = (current?.logs || '') + '\n--- Deploy ---\n' + deployLogs
       await updateDeployment(db, deploymentId, {
         status: 'failed',
         error: deployResult.error || 'deploy failed',
@@ -489,7 +634,8 @@ async function runBuildAndDeploy(
     }
 
     const current = await getDeployment(db, deploymentId)
-    const combinedLogs = (current?.logs || '') + '\n--- Deploy ---\n' + (deployResult.logs || []).join('\n')
+    const deployLogs = Array.isArray(deployResult.logs) ? deployResult.logs.join('\n') : String(deployResult.logs || '')
+    const combinedLogs = (current?.logs || '') + '\n--- Deploy ---\n' + deployLogs
     await updateDeployment(db, deploymentId, {
       status: 'deployed',
       objectId: deployResult.objectId || null,
