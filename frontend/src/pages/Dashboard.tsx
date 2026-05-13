@@ -1,11 +1,12 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useMemo } from 'react'
 import { Link } from 'react-router-dom'
 import { ConnectButton, useCurrentAccount } from '@mysten/dapp-kit'
 import { useAuth } from '../hooks/useAuth'
 import { listDeployments, type Deployment } from '../lib/api'
+import { encodeRepoUrl, repoDisplay } from '../lib/repos'
 import { Button } from '../components/ui/Button'
 import { Badge } from '../components/ui/Badge'
-import { Plus, Box, GitBranch, Globe, Clock, Wallet, CheckCircle2, XCircle, Loader2, AlertCircle } from 'lucide-react'
+import {   Plus, Box, GitBranch, Globe, Clock, Wallet, CheckCircle2, XCircle, Loader2, AlertCircle, ExternalLink } from 'lucide-react'
 
 const STATUS: Record<string, { color: 'success' | 'warning' | 'danger' | 'info' | 'default'; label: string; icon: React.ReactNode }> = {
   queued:    { color: 'default', label: 'Queued', icon: <Clock className="w-3 h-3" /> },
@@ -16,8 +17,11 @@ const STATUS: Record<string, { color: 'success' | 'warning' | 'danger' | 'info' 
   failed:    { color: 'danger', label: 'Failed', icon: <XCircle className="w-3 h-3" /> },
 }
 
-function repoDisplay(url: string): string {
-  return url.split('/').slice(-2).join('/').replace('.git', '')
+interface Project {
+  repoUrl: string
+  name: string
+  deployments: Deployment[]
+  latest: Deployment | null
 }
 
 export default function Dashboard() {
@@ -35,6 +39,34 @@ export default function Dashboard() {
     return () => clearInterval(interval)
   }, [isAuthenticated])
 
+  const projects = useMemo<Project[]>(() => {
+    const groups = new Map<string, Deployment[]>()
+    for (const d of deployments) {
+      if (d.status === 'deleted') continue
+      const existing = groups.get(d.repoUrl) || []
+      existing.push(d)
+      groups.set(d.repoUrl, existing)
+    }
+
+    const result: Project[] = []
+    for (const [repoUrl, deps] of groups) {
+      deps.sort((a, b) => +new Date(b.createdAt) - +new Date(a.createdAt))
+      result.push({
+        repoUrl,
+        name: repoDisplay(repoUrl),
+        deployments: deps,
+        latest: deps[0] || null,
+      })
+    }
+    // Sort projects by latest deployment date
+    result.sort((a, b) => {
+      const da = a.latest ? +new Date(a.latest.createdAt) : 0
+      const db = b.latest ? +new Date(b.latest.createdAt) : 0
+      return db - da
+    })
+    return result
+  }, [deployments])
+
   if (!account) {
     return (
       <div className="flex flex-col items-center justify-center py-20 px-4">
@@ -43,7 +75,7 @@ export default function Dashboard() {
         </div>
         <h2 className="text-2xl font-semibold text-white mb-3">Connect Wallet</h2>
         <p className="text-textMuted mb-8 text-center max-w-md">
-          Connect your Phantom wallet to view your deployments and manage your projects.
+          Connect your Phantom wallet to view your projects and deployments.
         </p>
         <ConnectButton />
       </div>
@@ -68,12 +100,10 @@ export default function Dashboard() {
     )
   }
 
-  const activeDeployments = deployments.filter((d) => d.status !== 'deleted')
-
   return (
     <div className="w-full">
       <div className="flex justify-between items-center mb-8">
-        <h2 className="text-2xl font-bold text-white tracking-tight">Deployments</h2>
+        <h2 className="text-2xl font-bold text-white tracking-tight">Projects</h2>
         <Link to="/deploy">
           <Button className="shadow-sm">
             <Plus className="w-4 h-4 mr-2" />
@@ -85,12 +115,12 @@ export default function Dashboard() {
       {loading ? (
         <div className="flex flex-col items-center justify-center py-20">
           <Loader2 className="w-8 h-8 text-primary animate-spin mb-4" />
-          <p className="text-textMuted font-medium">Loading deployments...</p>
+          <p className="text-textMuted font-medium">Loading projects...</p>
         </div>
-      ) : activeDeployments.length === 0 ? (
+      ) : projects.length === 0 ? (
         <div className="border border-dashed border-border rounded-xl flex flex-col items-center justify-center py-24 px-4 bg-surface/30">
           <Box className="w-12 h-12 text-textMuted mb-4" />
-          <h3 className="text-lg font-semibold text-white mb-2">No deployments yet</h3>
+          <h3 className="text-lg font-semibold text-white mb-2">No projects yet</h3>
           <p className="text-textMuted mb-6 text-center max-w-sm">
             You haven't deployed any projects yet. Connect your GitHub and ship your first site.
           </p>
@@ -101,48 +131,63 @@ export default function Dashboard() {
           </Link>
         </div>
       ) : (
-        <div className="grid gap-3">
-          {activeDeployments.map((d) => {
-            const s = STATUS[d.status] || STATUS.queued
+        <div className="grid gap-4">
+          {projects.map((project) => {
+            const latest = project.latest
+            const s = latest ? STATUS[latest.status] || STATUS.queued : STATUS.queued
+            const total = project.deployments.length
+            const liveCount = project.deployments.filter((d) => d.status === 'deployed').length
+            const failedCount = project.deployments.filter((d) => d.status === 'failed').length
+
             return (
               <Link
-                key={d.id}
-                to={`/deployments/${d.id}`}
-                className="group block p-4 bg-surface rounded-xl border border-border hover:border-primary/50 transition-all hover:shadow-md"
+                key={project.repoUrl}
+                to={`/projects/${encodeRepoUrl(project.repoUrl)}`}
+                className="group block p-5 bg-surface rounded-xl border border-border hover:border-primary/50 transition-all hover:shadow-md"
               >
                 <div className="flex items-center justify-between">
-                  <div className="flex flex-col gap-2">
+                  <div className="flex flex-col gap-3">
                     <div className="flex items-center gap-3">
                       <span className="text-base font-semibold text-white group-hover:text-primary transition-colors">
-                        {repoDisplay(d.repoUrl)}
+                        {project.name}
                       </span>
                       <Badge variant={s.color} className="gap-1.5 uppercase tracking-wider text-[10px]">
-                        {s.icon}
-                        {s.label}
+                        {s.icon} {s.label}
                       </Badge>
                     </div>
-                    
+
                     <div className="flex items-center gap-4 text-xs font-medium text-textMuted">
-                      <div className="flex items-center gap-1.5">
-                        <GitBranch className="w-3.5 h-3.5" />
-                        {d.branch}
-                      </div>
-                      <div className="flex items-center gap-1.5">
-                        <Globe className="w-3.5 h-3.5" />
-                        {d.network === 'testnet' ? 'Testnet' : 'Mainnet'}
-                      </div>
-                      <div className="flex items-center gap-1.5">
-                        <Clock className="w-3.5 h-3.5" />
-                        {new Date(d.createdAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
-                      </div>
-                      {d.base36Url && (
-                        <div className="flex items-center gap-1.5 text-info ml-2 bg-info/10 px-2 py-0.5 rounded-md">
-                          <span className="font-mono">{d.base36Url}</span>
-                        </div>
+                      {latest && (
+                        <>
+                          <div className="flex items-center gap-1.5">
+                            <GitBranch className="w-3.5 h-3.5" />
+                            {latest.branch}
+                          </div>
+                          <div className="flex items-center gap-1.5">
+                            <Globe className="w-3.5 h-3.5" />
+                            {latest.network === 'testnet' ? 'Testnet' : 'Mainnet'}
+                          </div>
+                          <div className="flex items-center gap-1.5">
+                            <Clock className="w-3.5 h-3.5" />
+                            {new Date(latest.createdAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                          </div>
+                        </>
                       )}
+                      <div className="flex items-center gap-2">
+                        <span className="bg-surface px-2 py-0.5 rounded border border-border">{total} deploy{total !== 1 ? 's' : ''}</span>
+                        {liveCount > 0 && <span className="bg-success/10 text-success px-2 py-0.5 rounded border border-success/20">{liveCount} live</span>}
+                        {failedCount > 0 && <span className="bg-danger/10 text-danger px-2 py-0.5 rounded border border-danger/20">{failedCount} failed</span>}
+                      </div>
                     </div>
+
+                    {latest?.base36Url && (
+                      <div className="flex items-center gap-1.5 text-info text-xs">
+                        <ExternalLink className="w-3 h-3" />
+                        <span className="font-mono">{latest.base36Url}.wal.app</span>
+                      </div>
+                    )}
                   </div>
-                  
+
                   <div className="text-textMuted group-hover:text-white transition-colors">
                     <AlertCircle className="w-5 h-5 opacity-0 group-hover:opacity-100 transition-opacity" />
                   </div>

@@ -38,6 +38,40 @@ export async function verifySignature(address: string, message: string, signatur
   return resp.json()
 }
 
+// ── Projects ──
+
+export interface Project {
+  id: string
+  userAddress: string
+  repoUrl: string
+  branch: string
+  baseDir: string
+  installCommand: string | null
+  buildCommand: string | null
+  outputDir: string | null
+  network: 'mainnet' | 'testnet'
+  createdAt: string
+  updatedAt: string
+}
+
+export async function listProjects(): Promise<Project[]> {
+  const resp = await authFetch('/projects')
+  if (!resp.ok) { const err = await resp.json(); throw new Error(err.error || 'failed to list projects') }
+  const data = await resp.json()
+  return data.projects || []
+}
+
+export async function getProject(id: string): Promise<{ project: Project; deployments: Deployment[] }> {
+  const resp = await authFetch(`/projects/${id}`)
+  if (!resp.ok) { const err = await resp.json(); throw new Error(err.error || 'project not found') }
+  return resp.json()
+}
+
+export async function deleteProject(id: string): Promise<void> {
+  const resp = await authFetch(`/projects/${id}`, { method: 'DELETE' })
+  if (!resp.ok) { const err = await resp.json(); throw new Error(err.error || 'delete failed') }
+}
+
 // ── Deployments ──
 
 export interface Deployment {

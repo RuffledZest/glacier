@@ -1,9 +1,10 @@
 import { useEffect, useState, useRef } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
 import { useAuth } from '../hooks/useAuth'
-import { getDeployment, deleteDeployment, retryDeployment, getToken, type Deployment } from '../lib/api'
-import { ansiToHtml } from '../lib/ansi'
+import { getDeployment, deleteDeployment, retryDeployment, getToken, type Deployment, type Project, listProjects } from '../lib/api'
+import { renderAnsiLogs } from '../lib/ansi'
 import { useSSE } from '../hooks/useSSE'
+import { encodeRepoUrl, repoDisplay } from '../lib/repos'
 import { Button } from '../components/ui/Button'
 import { Card, CardHeader, CardTitle, CardContent } from '../components/ui/Card'
 import { Badge } from '../components/ui/Badge'
@@ -32,15 +33,12 @@ const STATUS: Record<string, { color: 'success' | 'warning' | 'danger' | 'info' 
   failed:    { color: 'danger', label: 'Failed', icon: <XCircle className="w-3 h-3" /> },
 }
 
-function repoDisplay(url: string): string {
-  return url.split('/').slice(-2).join('/').replace('.git', '')
-}
-
 export default function DeploymentDetail() {
   const { id } = useParams<{ id: string }>()
   const { isAuthenticated } = useAuth()
   const navigate = useNavigate()
   const [d, setD] = useState<Deployment | null>(null)
+  const [project, setProject] = useState<Project | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [deleting, setDeleting] = useState(false)
@@ -106,6 +104,12 @@ export default function DeploymentDetail() {
       try {
         const dep = await getDeployment(id)
         setD(dep)
+        // Fetch project config
+        if (dep.repoUrl) {
+          const projects = await listProjects()
+          const p = projects.find((pr) => pr.repoUrl === dep.repoUrl)
+          if (p) setProject(p)
+        }
         setError(null)
         if (['queued', 'building', 'built', 'deploying'].includes(dep.status)) {
           timer = setTimeout(poll, 3000)
@@ -190,9 +194,13 @@ export default function DeploymentDetail() {
         </Link>
         <div className="flex items-center gap-2 text-sm font-medium text-textMuted">
           <LayoutDashboard className="w-4 h-4" />
-          <Link to="/dashboard" className="hover:text-white transition-colors">Deployments</Link>
+          <Link to="/dashboard" className="hover:text-white transition-colors">Dashboard</Link>
           <span className="text-border">/</span>
-          <span className="text-white truncate max-w-[200px]">{repoDisplay(d.repoUrl)}</span>
+          <Link to={`/projects/${encodeRepoUrl(d.repoUrl)}`} className="hover:text-white transition-colors truncate max-w-[150px]">
+            {repoDisplay(d.repoUrl)}
+          </Link>
+          <span className="text-border">/</span>
+          <span className="text-white truncate max-w-[100px]">{d.id.slice(0, 8)}</span>
         </div>
       </div>
 
@@ -274,12 +282,7 @@ export default function DeploymentDetail() {
               )}
             </div>
             <div className="flex-1 p-4 overflow-x-auto overflow-y-auto max-h-[600px] font-mono text-sm leading-relaxed scrollbar-thin scrollbar-thumb-border scrollbar-track-transparent">
-              <pre
-                dangerouslySetInnerHTML={{
-                  __html: ansiToHtml(liveLogs || d.logs || 'Waiting for logs...'),
-                }}
-                className="text-textMuted"
-              />
+              <LogPre liveLogs={liveLogs} storedLogs={d.logs} />
               <div ref={logsEndRef} className="h-4" />
             </div>
           </Card>
@@ -304,11 +307,18 @@ export default function DeploymentDetail() {
               <div className="h-px bg-border/50 w-full" />
 
               <div className="space-y-4">
-                <h4 className="text-xs font-semibold uppercase tracking-wider text-textMuted mb-2">Build Config</h4>
-                <DetailRow icon={<Code2 className="w-4 h-4" />} label="Install Cmd" value={d.installCommand || 'auto'} />
-                <DetailRow icon={<Terminal className="w-4 h-4" />} label="Build Cmd" value={d.buildCommand || 'auto'} />
-                <DetailRow icon={<FolderOutput className="w-4 h-4" />} label="Output Dir" value={d.outputDir || 'auto'} />
-                <DetailRow icon={<FolderOutput className="w-4 h-4" />} label="Base Dir" value={d.baseDir || '.'} />
+                <div className="flex items-center justify-between">
+                  <h4 className="text-xs font-semibold uppercase tracking-wider text-textMuted mb-2">Project Config</h4>
+                  {project && (
+                    <Link to={`/projects/${encodeRepoUrl(project.repoUrl)}`} className="text-xs text-info hover:text-info/80 transition-colors">
+                      Edit in Project
+                    </Link>
+                  )}
+                </div>
+                <DetailRow icon={<Code2 className="w-4 h-4" />} label="Install Cmd" value={project?.installCommand || d.installCommand || 'auto'} />
+                <DetailRow icon={<Terminal className="w-4 h-4" />} label="Build Cmd" value={project?.buildCommand || d.buildCommand || 'auto'} />
+                <DetailRow icon={<FolderOutput className="w-4 h-4" />} label="Output Dir" value={project?.outputDir || d.outputDir || 'auto'} />
+                <DetailRow icon={<FolderOutput className="w-4 h-4" />} label="Base Dir" value={project?.baseDir || d.baseDir || '.'} />
               </div>
 
               {d.objectId && (
@@ -329,6 +339,32 @@ export default function DeploymentDetail() {
       </div>
     </div>
   )
+}
+
+function LogPre({ liveLogs, storedLogs }: { liveLogs: string; storedLogs: unknown }) {
+  let html: string
+  try {
+    let source: string
+    if (typeof liveLogs === 'string' && liveLogs.length > 0) {
+      source = liveLogs
+    } else if (typeof storedLogs === 'string') {
+      source = storedLogs
+    } else if (storedLogs == null) {
+      source = 'Waiting for logs...'
+    } else {
+      try {
+        source = String(storedLogs)
+      } catch (e) {
+        console.error('[LogPre] failed to coerce storedLogs:', e, storedLogs)
+        source = 'Waiting for logs...'
+      }
+    }
+    html = renderAnsiLogs(source)
+  } catch (e) {
+    console.error('[LogPre] render error:', e, { liveLogsLength: liveLogs?.length, storedLogsType: typeof storedLogs })
+    html = '<span style="color:#f85149">[Error rendering logs]</span>'
+  }
+  return <pre dangerouslySetInnerHTML={{ __html: html }} className="text-textMuted" />
 }
 
 function DetailRow({ icon, label, value }: { icon: React.ReactNode; label: string; value: string }) {

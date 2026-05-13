@@ -73,7 +73,7 @@ export function useSSE({ url, token, onMessage, onDone }: UseSSEOptions) {
                     onDoneRef.current()
                     return
                   }
-                  if (parsed.text) {
+                  if (typeof parsed?.text === 'string') {
                     onMessageRef.current(parsed.text)
                   }
                 } catch (e) {

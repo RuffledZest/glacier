@@ -54,6 +54,7 @@ export default function Deploy() {
   const [repoPage, setRepoPage] = useState(1)
   const [loadingRepos, setLoadingRepos] = useState(false)
   const [search, setSearch] = useState('')
+  const [frameworkFilter, setFrameworkFilter] = useState('')
 
   // Framework detection
   const [frameworks, setFrameworks] = useState<Record<string, FrameworkInfo>>({})
@@ -256,8 +257,13 @@ export default function Deploy() {
 
   // Filter repos
   const filteredRepos = useMemo(() => {
-    return repos.filter((r) => r.full_name.toLowerCase().includes(search.toLowerCase()))
-  }, [repos, search])
+    return repos.filter((r) => {
+      const matchesSearch = r.full_name.toLowerCase().includes(search.toLowerCase())
+      if (!frameworkFilter) return matchesSearch
+      const fw = frameworks[r.full_name]
+      return matchesSearch && fw?.framework === frameworkFilter
+    })
+  }, [repos, search, frameworks, frameworkFilter])
 
   if (!account) {
     return (
@@ -287,10 +293,10 @@ export default function Deploy() {
   }
 
   return (
-    <div className="max-w-6xl mx-auto flex flex-col lg:flex-row gap-8">
-      
+    <div className="max-w-7xl mx-auto flex flex-col lg:flex-row gap-8">
+
       {/* Left Column: Repo Selection & Config */}
-      <div className="flex-1 space-y-6">
+      <div className="flex-1 min-w-0 space-y-6">
         <div>
           <h2 className="text-2xl font-bold tracking-tight mb-2">Deploy a new project</h2>
           <p className="text-textMuted">Select a repository and configure your build settings.</p>
@@ -310,22 +316,34 @@ export default function Deploy() {
           </Card>
         ) : (
           <Card className="flex flex-col overflow-hidden">
-            <div className="p-4 border-b border-border bg-surface/50">
-              <div className="flex items-center justify-between mb-4">
+            <div className="p-4 border-b border-border bg-surface/50 space-y-3">
+              <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2 text-sm font-medium">
-              <GithubIcon className="w-4 h-4" />
+                  <GithubIcon className="w-4 h-4" />
                   <span>{ghUser}</span>
                 </div>
               </div>
-              <div className="relative">
-                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-textMuted" />
-                <Input
-                  placeholder={loadingRepos ? 'Loading repositories...' : 'Search repositories...'}
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                  disabled={loadingRepos}
-                  className="pl-9 bg-background"
-                />
+              <div className="flex gap-3">
+                <div className="relative flex-1 min-w-0">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-textMuted" />
+                  <Input
+                    placeholder={loadingRepos ? 'Loading repositories...' : 'Search repositories...'}
+                    value={search}
+                    onChange={(e) => setSearch(e.target.value)}
+                    disabled={loadingRepos}
+                    className="pl-9 bg-background"
+                  />
+                </div>
+                <select
+                  value={frameworkFilter}
+                  onChange={(e) => setFrameworkFilter(e.target.value)}
+                  className="h-10 px-3 bg-surface border border-border rounded-md text-sm text-textMuted focus:outline-none focus:ring-1 focus:ring-primary appearance-none flex-shrink-0"
+                >
+                  <option value="">All frameworks</option>
+                  {Object.keys(FRAMEWORK_BADGES).map((fw) => (
+                    <option key={fw} value={fw}>{fw}</option>
+                  ))}
+                </select>
               </div>
             </div>
 
@@ -396,7 +414,7 @@ export default function Deploy() {
 
       {/* Right Column: Configuration & Cost */}
       {selectedRepo && (
-        <div className="w-full lg:w-[420px] space-y-6">
+        <div className="w-full lg:w-[420px] lg:flex-shrink-0 space-y-6">
           
           <Card className="overflow-hidden border-primary/20">
             <div className="p-4 bg-primary/10 border-b border-primary/10 flex items-center gap-3">

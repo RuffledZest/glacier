@@ -4,6 +4,7 @@ import Home from './pages/Home'
 import Dashboard from './pages/Dashboard'
 import Deploy from './pages/Deploy'
 import DeploymentDetail from './pages/DeploymentDetail'
+import ProjectDetail from './pages/ProjectDetail'
 
 function RedirectToDeploy() {
   const location = useLocation()
@@ -19,6 +20,7 @@ export default function App() {
           <Route path="/repos" element={<RedirectToDeploy />} />
           <Route path="/dashboard" element={<Dashboard />} />
           <Route path="/deploy" element={<Deploy />} />
+          <Route path="/projects/:encodedRepo" element={<ProjectDetail />} />
           <Route path="/deployments/:id" element={<DeploymentDetail />} />
         </Routes>
       </Layout>

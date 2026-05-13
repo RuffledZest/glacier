@@ -11,7 +11,7 @@ export default function Layout({ children }: { children: ReactNode }) {
   const navigate = useNavigate()
 
   return (
-    <div className="min-h-screen flex flex-col max-w-5xl mx-auto px-4 sm:px-6 lg:px-8">
+    <div className="min-h-screen flex flex-col max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
       <header className="flex items-center justify-between py-6 border-b border-border mb-8">
         <div className="flex items-center gap-8">
           <Link to="/" className="flex items-center gap-2 text-2xl font-bold text-text hover:text-white transition-colors">
