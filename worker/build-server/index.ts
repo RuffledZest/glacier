@@ -48,11 +48,16 @@ app.get('/status/:buildId', (c) => {
     let lastSize = 0
     let closed = false
     let idleTicks = 0
+    let timer: ReturnType<typeof setTimeout> | null = null
 
     const stream = new ReadableStream({
       start(controller) {
         const send = () => {
           if (closed) return
+          if (timer) {
+            clearTimeout(timer)
+            timer = null
+          }
           try {
             let hadNewData = false
 
@@ -70,22 +75,16 @@ app.get('/status/:buildId', (c) => {
                 controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify({ text })}
 \n`))
                 lastSize += size
-                // If there is more unread data, schedule another send immediately
-                if (lastSize < stat.size) {
-                  setTimeout(send, 0)
-                  return
-                }
                 hadNewData = true
               }
             }
 
             if (hadNewData) {
               idleTicks = 0
-              controller.enqueue(new TextEncoder().encode(`:keepalive\n\n`))
             } else {
               idleTicks++
-              controller.enqueue(new TextEncoder().encode(`:keepalive\n\n`))
             }
+            controller.enqueue(new TextEncoder().encode(`:keepalive\n\n`))
 
             // Only close once build/deploy are finished AND logs have been idle for a while
             const state = readState(buildId)
@@ -98,7 +97,7 @@ app.get('/status/:buildId', (c) => {
               return
             }
 
-            setTimeout(send, 250)
+            timer = setTimeout(send, 250)
           } catch {
             closed = true
             controller.close()

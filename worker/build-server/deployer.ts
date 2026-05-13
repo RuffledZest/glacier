@@ -341,16 +341,19 @@ function runStreamed(
   cmd: string,
   env: Record<string, string>,
   logPath: string | undefined,
-  timeout = 300000
+  timeout = 1_800_000 // 30 minutes default for large deploys
 ): Promise<{ exitCode: number; stdout: string; stderr: string }> {
   return new Promise((resolve) => {
     const proc = spawn(cmd, { shell: true, env, timeout })
     let stdout = ''
     let stderr = ''
+    const MAX_BUFFER = 50 * 1024 * 1024 // 50MB cap per stream to avoid OOM
 
     proc.stdout.on('data', (d: Buffer) => {
       const text = d.toString()
-      stdout += text
+      if (stdout.length < MAX_BUFFER) {
+        stdout += text.length > MAX_BUFFER ? text.slice(0, MAX_BUFFER) : text
+      }
       if (logPath) {
         try { appendFileSync(logPath, text) } catch {}
       }
@@ -358,7 +361,9 @@ function runStreamed(
 
     proc.stderr.on('data', (d: Buffer) => {
       const text = d.toString()
-      stderr += text
+      if (stderr.length < MAX_BUFFER) {
+        stderr += text.length > MAX_BUFFER ? text.slice(0, MAX_BUFFER) : text
+      }
       if (logPath) {
         try { appendFileSync(logPath, text) } catch {}
       }
