@@ -83,6 +83,45 @@ async function rpcCall<T>(url: string, method: string, params: unknown[]): Promi
   return data.result as T
 }
 
+/**
+ * Site-builder `deploy` uses a Sui **gas budget** cap (default often 0.5 SUI). That is not Walrus
+ * storage payment — storage is WAL. Smaller sites need a lower cap so modest SUI balances work.
+ * See https://docs.wal.app/docs/sites/getting-started/using-the-site-builder (`--gas-budget`).
+ */
+function computeDeployGasBudgetMist(totalBytes: number): bigint {
+  const MIN = 50_000_000n // 0.05 SUI floor
+  const MAX = 500_000_000n // common upstream default cap
+  const mib = BigInt(Math.max(1, Math.ceil(totalBytes / (1024 * 1024))))
+  const perMib = 2_000_000n // 0.002 SUI per MiB toward larger PTBs
+  const scaled = MIN + mib * perMib
+  return scaled > MAX ? MAX : scaled
+}
+
+/** Optional `WALRUS_GAS_BUDGET_MIST` env: integer MIST, roughly 1e6–1e9. */
+function resolveGasBudgetMist(totalBytes: number): bigint {
+  const raw = (process.env.WALRUS_GAS_BUDGET_MIST || '').trim()
+  if (/^\d+$/.test(raw)) {
+    const v = BigInt(raw)
+    if (v >= 1_000_000n && v <= 1_000_000_000n) return v
+  }
+  return computeDeployGasBudgetMist(totalBytes)
+}
+
+function assertSuiCoversGasBudget(
+  sui: bigint,
+  gasBudgetMist: bigint,
+  suiAddress: string,
+): { ok: true } | { ok: false; error: string } {
+  if (sui < gasBudgetMist) {
+    return {
+      ok: false,
+      error:
+        `Insufficient SUI for the deploy transaction gas budget. Have ${sui} MIST (~${(Number(sui) / 1e9).toFixed(4)} SUI), need at least ${gasBudgetMist} MIST (~${(Number(gasBudgetMist) / 1e9).toFixed(4)} SUI) as site-builder --gas-budget. Walrus storage is paid in WAL; SUI is for Sui gas only. Fund ${suiAddress} or raise WALRUS_GAS_BUDGET_MIST if deploy fails with GasBudgetTooLow.`,
+    }
+  }
+  return { ok: true }
+}
+
 async function getBalances(address: string, rpcUrl: string, logs: string[]): Promise<{ sui: bigint; wal: bigint }> {
   const suiResult = await rpcCall<{ totalBalance: string }>(rpcUrl, 'suix_getBalance', [address, '0x2::sui::SUI'])
   const sui = BigInt(suiResult.totalBalance)
@@ -196,7 +235,8 @@ async function ensureFunds(
   epochs: number | 'max',
   suiKeystore: string,
   suiAddress: string,
-  logs: string[]
+  logs: string[],
+  gasBudgetMist: bigint,
 ): Promise<{ sufficient: boolean; error?: string }> {
   const rpcUrl = network === 'testnet'
     ? 'https://fullnode.testnet.sui.io:443'
@@ -244,16 +284,14 @@ async function ensureFunds(
     return { sufficient: true } // optimistic
   }
 
-  const MIN_SUI_FOR_GAS = 50_000_000n // 0.05 SUI
+  const MIN_SUI_FOR_GAS = 50_000_000n // 0.05 SUI — small headroom beyond gas budget (e.g. get-wal)
+  const suiFloor = gasBudgetMist > MIN_SUI_FOR_GAS ? gasBudgetMist : MIN_SUI_FOR_GAS
+  logs.push(`Deploy gas budget cap (site-builder): ${gasBudgetMist} MIST (~${(Number(gasBudgetMist) / 1e9).toFixed(4)} SUI)`)
 
   // 4. Already sufficient?
   if (balances.wal >= requiredWal) {
-    if (balances.sui < MIN_SUI_FOR_GAS) {
-      return {
-        sufficient: false,
-        error: `Insufficient SUI for gas. Have: ${balances.sui} MIST, need at least ${MIN_SUI_FOR_GAS} MIST (0.05 SUI). Please fund your wallet.`,
-      }
-    }
+    const g = assertSuiCoversGasBudget(balances.sui, suiFloor, suiAddress)
+    if (!g.ok) return { sufficient: false, error: g.error }
     logs.push('Sufficient WAL and SUI for deployment')
     return { sufficient: true }
   }
@@ -268,15 +306,16 @@ async function ensureFunds(
     }
   }
 
-  // Testnet — attempt SUI → WAL exchange
-  if (balances.sui <= MIN_SUI_FOR_GAS) {
+  // Testnet — attempt SUI → WAL exchange (leave deploy gas budget + small buffer)
+  const suiReserve = gasBudgetMist + MIN_SUI_FOR_GAS
+  if (balances.sui <= suiReserve) {
     return {
       sufficient: false,
-      error: `Insufficient SUI to exchange for WAL. Have: ${balances.sui} MIST, need more than ${MIN_SUI_FOR_GAS} MIST after gas reserve. Please fund with testnet SUI.`,
+      error: `Insufficient SUI to exchange for WAL. Have: ${balances.sui} MIST, need more than ${suiReserve} MIST reserved for deploy gas budget + buffer. Please fund with testnet SUI.`,
     }
   }
 
-  const maxSuiToExchange = balances.sui - MIN_SUI_FOR_GAS
+  const maxSuiToExchange = balances.sui - suiReserve
   let suiToExchange = maxSuiToExchange > 1_000_000_000n ? 1_000_000_000n : maxSuiToExchange
   if (suiToExchange < 100_000_000n && maxSuiToExchange >= 100_000_000n) {
     suiToExchange = 100_000_000n
@@ -304,22 +343,25 @@ async function ensureFunds(
     logs.push(`Post-exchange — SUI: ${newBalances.sui} MIST, WAL: ${newBalances.wal} FROST`)
 
     if (newBalances.wal >= requiredWal) {
-      if (newBalances.sui < MIN_SUI_FOR_GAS) {
-        return { sufficient: false, error: `WAL acquired but insufficient SUI remains for gas (${newBalances.sui} MIST).` }
-      }
+      const g1 = assertSuiCoversGasBudget(newBalances.sui, suiFloor, suiAddress)
+      if (!g1.ok) return { sufficient: false, error: g1.error }
       logs.push('Sufficient WAL after exchange')
       return { sufficient: true }
     }
 
     // Attempt second exchange
-    const remainingSui = newBalances.sui - MIN_SUI_FOR_GAS
+    const remainingSui = newBalances.sui - suiReserve
     if (remainingSui > 100_000_000n) {
       logs.push(`Still short, second exchange with ${remainingSui} MIST...`)
       const second = await exchangeSuiForWal(remainingSui, walrusBin, network, env, logs)
       if (second.success) {
         const finalBalances = await getBalances(suiAddress, rpcUrl, logs)
         logs.push(`Final — SUI: ${finalBalances.sui} MIST, WAL: ${finalBalances.wal} FROST`)
-        if (finalBalances.wal >= requiredWal) return { sufficient: true }
+        if (finalBalances.wal >= requiredWal) {
+          const g2 = assertSuiCoversGasBudget(finalBalances.sui, suiFloor, suiAddress)
+          if (!g2.ok) return { sufficient: false, error: g2.error }
+          return { sufficient: true }
+        }
       }
     }
 
@@ -440,8 +482,10 @@ export async function deployToWalrus(params: DeployParams): Promise<DeployResult
       log('Removed .keep file from dist')
     }
 
-    // ── 4. Ensure sufficient funds ──
-    const fundsResult = await ensureFunds(network, distPath, epochs, keystoreContent, suiAddress, logs)
+    // ── 4. Ensure sufficient funds (gas budget scales with site size; storage is WAL) ──
+    const siteBytes = totalDirSize(distPath)
+    const gasBudgetMist = resolveGasBudgetMist(siteBytes)
+    const fundsResult = await ensureFunds(network, distPath, epochs, keystoreContent, suiAddress, logs, gasBudgetMist)
     if (!fundsResult.sufficient) {
       return { success: false, error: fundsResult.error, logs }
     }
@@ -490,6 +534,7 @@ export async function deployToWalrus(params: DeployParams): Promise<DeployResult
       SUI_ADDRESS: suiAddress,
       SITE_BUILDER_BIN: siteBuilderBin,
       CI: 'true',
+      WALRUS_GAS_BUDGET_MIST: gasBudgetMist.toString(),
     }
 
     const { exitCode, stdout, stderr } = await runStreamed(cmd, deployEnv, params.logPath)
