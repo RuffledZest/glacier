@@ -1,0 +1,9 @@
+# Wrangler loads this file as secrets for `wrangler dev`. Do not commit real values.
+
+JWT_SECRET=replace-with-long-random-string
+GITHUB_CLIENT_ID=
+GITHUB_CLIENT_SECRET=
+
+# Match your wrangler vars / GitHub OAuth callback registration
+# FRONTEND_URL=http://127.0.0.1:5173
+# API_PUBLIC_URL=http://127.0.0.1:8787

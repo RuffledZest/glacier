@@ -6,7 +6,9 @@ node_modules/
 .env
 .env.*
 !.env.example
+!frontend/.env.example
 
+worker/.dev.vars
 # Build outputs
 dist/
 build/

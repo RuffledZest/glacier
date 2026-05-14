@@ -1,10 +1,9 @@
 import { Link } from 'react-router-dom'
-import { ConnectButton, useCurrentAccount } from '@mysten/dapp-kit'
 import { useAuth } from '../hooks/useAuth'
 import { Button } from '../components/ui/Button'
 import { Card } from '../components/ui/Card'
 import { Badge } from '../components/ui/Badge'
-import { Zap, Cloud, Lock, GitMerge, ShieldCheck, Triangle, Zap as ZapIcon, Rocket, CircleDashed, Globe } from 'lucide-react'
+import { Zap, Cloud, GitMerge, ShieldCheck, Triangle, Zap as ZapIcon, Rocket, CircleDashed, Globe, LogIn } from 'lucide-react'
 
 function GithubIcon({ className }: { className?: string }) {
   return (
@@ -30,7 +29,6 @@ const FRAMEWORKS = [
 
 export default function Home() {
   const { isAuthenticated } = useAuth()
-  const account = useCurrentAccount()
 
   return (
     <div className="flex flex-col items-center py-12 px-4 sm:px-6 lg:px-8">
@@ -44,12 +42,10 @@ export default function Home() {
         </p>
 
         <div className="flex justify-center gap-4">
-          {!account ? (
-            <ConnectButton />
-          ) : !isAuthenticated ? (
-            <Link to="/dashboard">
+          {!isAuthenticated ? (
+            <Link to="/deploy">
               <Button size="lg" className="px-8 font-semibold text-base shadow-lg shadow-primary/20">
-                Go to Dashboard
+                Sign in with GitHub
               </Button>
             </Link>
           ) : (
@@ -80,9 +76,9 @@ export default function Home() {
           desc="Deploy directly to Walrus on Sui. Choose between Testnet and Mainnet environments." 
         />
         <FeatureCard 
-          icon={<Lock className="w-6 h-6 text-purple-400" />}
-          title="Wallet Auth" 
-          desc="Sign in securely with your Phantom Sui wallet. Your keys, your identity, your deployments." 
+          icon={<LogIn className="w-6 h-6 text-purple-400" />}
+          title="GitHub sign-in" 
+          desc="Sign in with GitHub OAuth. Deployments use Glacier's platform wallet on Sui — no browser wallet required." 
         />
         <FeatureCard 
           icon={<GitMerge className="w-6 h-6 text-green-400" />}

@@ -1,9 +1,9 @@
 import { useEffect, useState, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { ConnectButton, useCurrentAccount } from '@mysten/dapp-kit'
 import { useAuth } from '../hooks/useAuth'
 import {
-  getGithubOAuthUrl, linkGithub, getGithubStatus,
+  getGithubLoginUrl,
+  getGithubStatus,
   listGithubRepos, quickDetectFrameworks, detectRepoProjects,
   createDeployment, listRepoBranches, estimateCost,
   type GithubRepo, type FrameworkInfo, type CostEstimate,
@@ -41,13 +41,11 @@ const FRAMEWORK_BADGES: Record<string, { bg: 'default' | 'success' | 'warning' |
 
 export default function Deploy() {
   const { isAuthenticated, login } = useAuth()
-  const account = useCurrentAccount()
   const navigate = useNavigate()
 
   // GitHub connection
   const [ghConnected, setGhConnected] = useState(false)
   const [ghUser, setGhUser] = useState<string | null>(null)
-  const [linking, setLinking] = useState(false)
 
   // Repos
   const [repos, setRepos] = useState<GithubRepo[]>([])
@@ -86,21 +84,10 @@ export default function Deploy() {
 
   const [showAdvanced, setShowAdvanced] = useState(false)
 
-  // Init — check GitHub connection
+  // Init — check GitHub connection (token from OAuth hash is applied in useAuth)
   useEffect(() => {
     if (!isAuthenticated) return
-    const params = new URLSearchParams(window.location.search)
-    const token = params.get('token')
-    const ghUserParam = params.get('gh_user')
-    if (token) {
-      setLinking(true)
-      linkGithub(token, ghUserParam || '').then(() => {
-        window.history.replaceState({}, '', '/deploy')
-        loadStatus()
-      }).catch(console.error).finally(() => setLinking(false))
-    } else {
-      loadStatus()
-    }
+    void loadStatus()
   }, [isAuthenticated])
 
   // Clamp epochs when network changes
@@ -250,7 +237,7 @@ export default function Deploy() {
 
   async function connectGithub() {
     try {
-      const url = await getGithubOAuthUrl()
+      const url = await getGithubLoginUrl()
       window.location.href = url
     } catch (err) { console.error(err) }
   }
@@ -265,29 +252,15 @@ export default function Deploy() {
     })
   }, [repos, search, frameworks, frameworkFilter])
 
-  if (!account) {
-    return (
-      <div className="flex flex-col items-center justify-center py-20">
-        <h2 className="text-2xl font-semibold mb-4">Connect Wallet to Deploy</h2>
-        <ConnectButton />
-      </div>
-    )
-  }
   if (!isAuthenticated) {
     return (
       <div className="flex flex-col items-center justify-center py-20">
         <ShieldCheck className="w-12 h-12 text-primary mb-4" />
-        <h2 className="text-2xl font-semibold mb-2">Sign in to continue</h2>
-        <p className="text-textMuted mb-6">Authenticate with your wallet to deploy projects.</p>
-        <Button onClick={login} size="lg">Sign In</Button>
-      </div>
-    )
-  }
-  if (linking) {
-    return (
-      <div className="flex flex-col items-center justify-center py-20">
-        <Spinner className="w-8 h-8 text-primary mb-4" />
-        <p className="text-textMuted">Linking GitHub account...</p>
+        <h2 className="text-2xl font-semibold mb-2">Sign in to deploy</h2>
+        <p className="text-textMuted mb-6 text-center max-w-md">
+          Sign in with GitHub to browse repositories and deploy to Walrus.
+        </p>
+        <Button onClick={() => void login()} size="lg">Sign in with GitHub</Button>
       </div>
     )
   }

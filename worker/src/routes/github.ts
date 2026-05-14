@@ -1,6 +1,6 @@
 import { Hono } from 'hono'
 import type { Env } from '..'
-import { verifyJwt } from '../auth'
+import { verifyJwt, createOAuthStateToken, verifyOAuthStateToken, createSessionJwt } from '../auth'
 import {
   getOAuthUrl,
   exchangeCode,
@@ -12,103 +12,110 @@ import {
 
 const router = new Hono<{ Bindings: Env }>()
 
-// GET /api/github/auth — returns OAuth URL to redirect to
-router.get('/auth', async (c) => {
-  const authHeader = c.req.header('Authorization')
-  if (!authHeader?.startsWith('Bearer ')) {
-    return c.json({ error: 'missing authorization header' }, 401)
-  }
+function trimSlash(s: string): string {
+  return s.replace(/\/+$/, '')
+}
 
-  const token = authHeader.slice(7)
-  const payload = await verifyJwt(token, c.env.JWT_SECRET)
-  if (!payload) {
-    return c.json({ error: 'invalid or expired token' }, 401)
+function resolveGithubRedirectUri(env: Env, requestUrl?: string): string | null {
+  const explicit = env.GITHUB_REDIRECT_URI?.trim()
+  if (explicit) return explicit
+  const base = env.API_PUBLIC_URL?.trim()
+  if (base) return `${trimSlash(base)}/api/github/callback`
+  // Fallback: same origin as this request (works for *.workers.dev without dashboard vars).
+  if (requestUrl) {
+    try {
+      const u = new URL(requestUrl)
+      return `${u.origin}/api/github/callback`
+    } catch {
+      /* ignore */
+    }
   }
+  return null
+}
 
+function resolveFrontendBase(env: Env): string | null {
+  const u = env.FRONTEND_URL?.trim()
+  return u ? trimSlash(u) : null
+}
+
+// GET /api/github/login — start OAuth (no auth); returns { url }
+router.get('/login', async (c) => {
   const clientId = c.env.GITHUB_CLIENT_ID
   if (!clientId) {
     return c.json({ error: 'GitHub OAuth not configured on server' }, 500)
   }
 
-  const redirectUri = `https://glacier.construct-computer.workers.dev/api/github/callback`
-  const url = getOAuthUrl(clientId, redirectUri)
+  const redirectUri = resolveGithubRedirectUri(c.env, c.req.url)
+  if (!redirectUri) {
+    return c.json(
+      { error: 'Could not determine OAuth callback URL (set GITHUB_REDIRECT_URI or API_PUBLIC_URL)' },
+      500
+    )
+  }
 
+  const secret = c.env.JWT_SECRET
+  if (!secret) {
+    return c.json({ error: 'server misconfigured' }, 500)
+  }
+
+  const state = await createOAuthStateToken(secret)
+  const url = getOAuthUrl(clientId, redirectUri, state)
   return c.json({ url })
 })
 
-// GET /api/github/callback — handle OAuth redirect from GitHub
+// GET /api/github/callback — GitHub redirects here; issues session JWT + stores token
 router.get('/callback', async (c) => {
+  const frontend = resolveFrontendBase(c.env)
+  const redirectWithHash = (fragment: string) => {
+    if (!frontend) {
+      return c.json({ error: 'FRONTEND_URL is not configured' }, 500)
+    }
+    return c.redirect(`${frontend}/deploy#${fragment}`)
+  }
+
   const code = c.req.query('code')
   const state = c.req.query('state')
 
-  if (!code) {
-    return c.json({ error: 'missing code parameter' }, 400)
+  if (!code || !state) {
+    return redirectWithHash(`error=${encodeURIComponent('missing OAuth parameters')}`)
+  }
+
+  const secret = c.env.JWT_SECRET
+  if (!secret || !(await verifyOAuthStateToken(state, secret))) {
+    return redirectWithHash(`error=${encodeURIComponent('invalid or expired OAuth state')}`)
   }
 
   const clientId = c.env.GITHUB_CLIENT_ID
   const clientSecret = c.env.GITHUB_CLIENT_SECRET
-
   if (!clientId || !clientSecret) {
-    return c.json({ error: 'GitHub OAuth not configured on server' }, 500)
+    return redirectWithHash(`error=${encodeURIComponent('GitHub OAuth not configured')}`)
   }
 
   try {
-    const { access_token, github_user } = await exchangeCode(code, clientId, clientSecret)
+    const { access_token, github_user, github_id } = await exchangeCode(code, clientId, clientSecret)
+    const userId = `github:${github_id}`
+    const db = c.env.DB
+    await db
+      .prepare(
+        `INSERT INTO github_tokens (user_address, access_token, github_user, updated_at)
+         VALUES (?1, ?2, ?3, datetime('now'))
+         ON CONFLICT(user_address) DO UPDATE SET
+           access_token = excluded.access_token,
+           github_user = excluded.github_user,
+           updated_at = datetime('now')`
+      )
+      .bind(userId, access_token, github_user)
+      .run()
 
-    // At this point we have the GitHub token but no user context.
-    // We need the user to be authenticated with Phantom too.
-    // We'll pass the token via query param to the frontend, which will
-    // then send it with the Phantom JWT to complete the linking.
-
-    return c.redirect(
-      `https://glacier-frontend.pages.dev/deploy?token=${encodeURIComponent(access_token)}&gh_user=${encodeURIComponent(github_user || '')}`
-    )
+    const sessionJwt = await createSessionJwt({ userId, githubLogin: github_user }, secret)
+    return redirectWithHash(`token=${encodeURIComponent(sessionJwt)}`)
   } catch (err) {
     const message = err instanceof Error ? err.message : 'OAuth failed'
-    return c.json({ error: message }, 500)
+    return redirectWithHash(`error=${encodeURIComponent(message)}`)
   }
 })
 
-// GET /api/github/link — frontend calls this with Phantom JWT + GitHub token to store
-router.get('/link', async (c) => {
-  // This is called after the redirect from callback.
-  // The frontend intercepts the redirect and calls this with the Phantom JWT.
-  const authHeader = c.req.header('Authorization')
-  if (!authHeader?.startsWith('Bearer ')) {
-    return c.json({ error: 'missing authorization header' }, 401)
-  }
-
-  const jwt = authHeader.slice(7)
-  const payload = await verifyJwt(jwt, c.env.JWT_SECRET)
-  if (!payload) {
-    return c.json({ error: 'invalid or expired token' }, 401)
-  }
-
-  const githubToken = c.req.query('token')
-  const githubUser = c.req.query('gh_user') || null
-
-  if (!githubToken) {
-    return c.json({ error: 'missing GitHub token' }, 400)
-  }
-
-  // Store token in D1
-  const db = c.env.DB
-  await db
-    .prepare(
-      `INSERT INTO github_tokens (user_address, access_token, github_user, updated_at)
-       VALUES (?1, ?2, ?3, datetime('now'))
-       ON CONFLICT(user_address) DO UPDATE SET
-         access_token = excluded.access_token,
-         github_user = excluded.github_user,
-         updated_at = datetime('now')`
-    )
-    .bind(payload.address as string, githubToken, githubUser)
-    .run()
-
-  return c.json({ ok: true, github_user: githubUser })
-})
-
-// GET /api/github/status — check if user has connected GitHub
+// GET /api/github/status — check if user has GitHub linked (always true after login; useful for token row)
 router.get('/status', async (c) => {
   const authHeader = c.req.header('Authorization')
   if (!authHeader?.startsWith('Bearer ')) {

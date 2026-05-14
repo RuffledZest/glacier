@@ -1,10 +1,16 @@
 import { sign, verify } from 'hono/jwt'
 
-export async function createJwt(address: string, secret: string): Promise<string> {
+export interface SessionJwtInput {
+  userId: string
+  githubLogin: string
+}
+
+export async function createSessionJwt(input: SessionJwtInput, secret: string): Promise<string> {
   const now = Math.floor(Date.now() / 1000)
   const payload = {
-    sub: address,
-    address,
+    sub: input.userId,
+    address: input.userId,
+    github_login: input.githubLogin,
     iat: now,
     exp: now + 86400, // 24 hours
   }
@@ -20,12 +26,18 @@ export async function verifyJwt(token: string, secret: string) {
   }
 }
 
-export function generateNonce(): string {
-  const bytes = new Uint8Array(32)
-  crypto.getRandomValues(bytes)
-  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('')
+/** Short-lived signed state for GitHub OAuth CSRF protection. */
+export async function createOAuthStateToken(secret: string): Promise<string> {
+  const now = Math.floor(Date.now() / 1000)
+  return sign(
+    { purpose: 'github_oauth_state', iat: now, exp: now + 600 },
+    secret,
+    'HS256'
+  )
 }
 
-export function buildSignMessage(nonce: string): string {
-  return `Sign this message to authenticate with Glacier.\n\nNonce: ${nonce}`
+export async function verifyOAuthStateToken(token: string, secret: string): Promise<boolean> {
+  const payload = await verifyJwt(token, secret)
+  if (!payload || typeof payload !== 'object') return false
+  return (payload as Record<string, unknown>).purpose === 'github_oauth_state'
 }

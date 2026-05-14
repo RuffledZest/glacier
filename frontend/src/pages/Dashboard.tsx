@@ -1,12 +1,20 @@
 import { useEffect, useState, useMemo } from 'react'
 import { Link } from 'react-router-dom'
-import { ConnectButton, useCurrentAccount } from '@mysten/dapp-kit'
 import { useAuth } from '../hooks/useAuth'
 import { listDeployments, type Deployment } from '../lib/api'
 import { encodeRepoUrl, repoDisplay } from '../lib/repos'
 import { Button } from '../components/ui/Button'
 import { Badge } from '../components/ui/Badge'
-import {   Plus, Box, GitBranch, Globe, Clock, Wallet, CheckCircle2, XCircle, Loader2, AlertCircle, ExternalLink } from 'lucide-react'
+import { Plus, Box, GitBranch, Globe, Clock, Loader2, AlertCircle, ExternalLink, CheckCircle2, XCircle } from 'lucide-react'
+
+function GithubIcon({ className }: { className?: string }) {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <path d="M15 22v-4a4.8 4.8 0 0 0-1-3.5c3 0 6-2 6-5.5.08-1.25-.27-2.48-1-3.5.28-1.15.28-2.35 0-3.5 0 0-1 0-3 1.5-2.64-.5-5.36-.5-8 0C6 2 5 2 5 2c-.3 1.15-.3 2.35 0 3.5A5.403 5.403 0 0 0 4 9c0 3.5 3 5.5 6 5.5-.39.49-.68 1.05-.85 1.65-.17.6-.22 1.23-.15 1.85v4"/>
+      <path d="M9 18c-4.51 2-5-2-7-2"/>
+    </svg>
+  )
+}
 
 const STATUS: Record<string, { color: 'success' | 'warning' | 'danger' | 'info' | 'default'; label: string; icon: React.ReactNode }> = {
   queued:    { color: 'default', label: 'Queued', icon: <Clock className="w-3 h-3" /> },
@@ -26,7 +34,6 @@ interface Project {
 
 export default function Dashboard() {
   const { isAuthenticated, login, isConnecting } = useAuth()
-  const account = useCurrentAccount()
   const [deployments, setDeployments] = useState<Deployment[]>([])
   const [loading, setLoading] = useState(true)
 
@@ -58,7 +65,6 @@ export default function Dashboard() {
         latest: deps[0] || null,
       })
     }
-    // Sort projects by latest deployment date
     result.sort((a, b) => {
       const da = a.latest ? +new Date(a.latest.createdAt) : 0
       const db = b.latest ? +new Date(b.latest.createdAt) : 0
@@ -67,34 +73,19 @@ export default function Dashboard() {
     return result
   }, [deployments])
 
-  if (!account) {
-    return (
-      <div className="flex flex-col items-center justify-center py-20 px-4">
-        <div className="w-16 h-16 bg-surface border border-border rounded-2xl flex items-center justify-center mb-6 shadow-sm">
-          <Wallet className="w-8 h-8 text-primary" />
-        </div>
-        <h2 className="text-2xl font-semibold text-white mb-3">Connect Wallet</h2>
-        <p className="text-textMuted mb-8 text-center max-w-md">
-          Connect your Phantom wallet to view your projects and deployments.
-        </p>
-        <ConnectButton />
-      </div>
-    )
-  }
-
   if (!isAuthenticated) {
     return (
       <div className="flex flex-col items-center justify-center py-20 px-4">
         <div className="w-16 h-16 bg-surface border border-border rounded-2xl flex items-center justify-center mb-6 shadow-sm">
-          <ShieldCheck className="w-8 h-8 text-primary" />
+          <GithubIcon className="w-8 h-8 text-primary" />
         </div>
-        <h2 className="text-2xl font-semibold text-white mb-3">Sign In</h2>
+        <h2 className="text-2xl font-semibold text-white mb-3">Sign in</h2>
         <p className="text-textMuted mb-8 text-center max-w-md">
-          Sign a message with your wallet to authenticate and view your dashboard.
+          Sign in with GitHub to view your projects and deployments.
         </p>
-        <Button onClick={login} disabled={isConnecting} size="lg" className="px-8 shadow-lg shadow-primary/20">
+        <Button onClick={() => void login()} disabled={isConnecting} size="lg" className="px-8 shadow-lg shadow-primary/20">
           {isConnecting ? <Loader2 className="w-5 h-5 animate-spin mr-2" /> : null}
-          {isConnecting ? 'Signing In...' : 'Sign In with Wallet'}
+          {isConnecting ? 'Redirecting…' : 'Sign in with GitHub'}
         </Button>
       </div>
     )
@@ -122,7 +113,7 @@ export default function Dashboard() {
           <Box className="w-12 h-12 text-textMuted mb-4" />
           <h3 className="text-lg font-semibold text-white mb-2">No projects yet</h3>
           <p className="text-textMuted mb-6 text-center max-w-sm">
-            You haven't deployed any projects yet. Connect your GitHub and ship your first site.
+            You haven&apos;t deployed any projects yet. Connect your GitHub and ship your first site.
           </p>
           <Link to="/deploy">
             <Button>
@@ -199,8 +190,4 @@ export default function Dashboard() {
       )}
     </div>
   )
-}
-
-function ShieldCheck(props: any) {
-  return <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10"/><path d="m9 12 2 2 4-4"/></svg>
 }

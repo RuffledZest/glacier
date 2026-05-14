@@ -31,12 +31,12 @@ export interface DetectedProject {
   framework?: string
 }
 
-export function getOAuthUrl(clientId: string, redirectUri: string): string {
+export function getOAuthUrl(clientId: string, redirectUri: string, state: string): string {
   const params = new URLSearchParams({
     client_id: clientId,
     redirect_uri: redirectUri,
     scope: 'repo',
-    state: crypto.randomUUID(),
+    state,
   })
   return `https://github.com/login/oauth/authorize?${params}`
 }
@@ -45,7 +45,7 @@ export async function exchangeCode(
   code: string,
   clientId: string,
   clientSecret: string
-): Promise<{ access_token: string; github_user?: string }> {
+): Promise<{ access_token: string; github_user: string; github_id: number }> {
   const resp = await fetch('https://github.com/login/oauth/access_token', {
     method: 'POST',
     headers: {
@@ -75,25 +75,27 @@ export async function exchangeCode(
     throw new Error(`GitHub OAuth error: ${data.error_description || data.error}`)
   }
 
-  // Fetch GitHub username
-  let githubUser: string | undefined
-  try {
-    const userResp = await fetch('https://api.github.com/user', {
-      headers: {
-        Authorization: `Bearer ${data.access_token}`,
-        Accept: 'application/vnd.github.v3+json',
-        'User-Agent': 'glacier',
-      },
-    })
-    if (userResp.ok) {
-      const userData = (await userResp.json()) as { login: string }
-      githubUser = userData.login
-    }
-  } catch {
-    // non-critical
+  const userResp = await fetch('https://api.github.com/user', {
+    headers: {
+      Authorization: `Bearer ${data.access_token}`,
+      Accept: 'application/vnd.github.v3+json',
+      'User-Agent': 'glacier',
+    },
+  })
+  if (!userResp.ok) {
+    const text = await userResp.text()
+    throw new Error(`GitHub user fetch failed: ${userResp.status} ${text}`)
+  }
+  const userData = (await userResp.json()) as { login: string; id: number }
+  if (typeof userData.id !== 'number' || !userData.login) {
+    throw new Error('GitHub user response missing id or login')
   }
 
-  return { access_token: data.access_token, github_user: githubUser }
+  return {
+    access_token: data.access_token,
+    github_user: userData.login,
+    github_id: userData.id,
+  }
 }
 
 async function ghFetch(token: string, path: string): Promise<Response> {

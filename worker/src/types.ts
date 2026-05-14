@@ -92,6 +92,7 @@ export interface DeployResult {
 export interface JwtPayload {
   sub: string
   address: string
+  github_login?: string
   iat: number
   exp: number
 }

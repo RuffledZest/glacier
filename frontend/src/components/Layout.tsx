@@ -1,13 +1,13 @@
 import { Link, useNavigate, useLocation } from 'react-router-dom'
-import { ConnectButton } from '@mysten/dapp-kit'
 import { useAuth } from '../hooks/useAuth'
 import WalletFooter from './WalletFooter'
 import type { ReactNode } from 'react'
 import { cn } from '../lib/utils'
 import { Box } from 'lucide-react'
+import { Button } from './ui/Button'
 
 export default function Layout({ children }: { children: ReactNode }) {
-  const { account, isAuthenticated, logout } = useAuth()
+  const { isAuthenticated, githubLogin, logout, login, isConnecting } = useAuth()
   const navigate = useNavigate()
 
   return (
@@ -18,7 +18,7 @@ export default function Layout({ children }: { children: ReactNode }) {
             <Box className="w-8 h-8 text-primary" />
             <span className="tracking-tight">Glacier</span>
           </Link>
-          
+
           {isAuthenticated && (
             <nav className="hidden md:flex gap-6">
               <NavLink to="/dashboard">Dashboard</NavLink>
@@ -32,18 +32,24 @@ export default function Layout({ children }: { children: ReactNode }) {
             <div className="flex items-center gap-3 bg-surface px-3 py-1.5 rounded-full border border-border">
               <div className="w-2 h-2 rounded-full bg-success"></div>
               <span className="text-sm font-medium text-textMuted">
-                {account?.address?.slice(0, 6)}...{account?.address?.slice(-4)}
+                {githubLogin ?? 'GitHub'}
               </span>
               <div className="w-px h-4 bg-border mx-1"></div>
               <button
-                onClick={() => { logout(); navigate('/') }}
+                type="button"
+                onClick={() => {
+                  logout()
+                  navigate('/')
+                }}
                 className="text-sm font-medium text-textMuted hover:text-text transition-colors"
               >
-                Disconnect
+                Sign out
               </button>
             </div>
           ) : (
-            <ConnectButton />
+            <Button type="button" onClick={() => void login()} disabled={isConnecting} size="sm">
+              {isConnecting ? 'Redirecting…' : 'Sign in with GitHub'}
+            </Button>
           )}
         </div>
       </header>
@@ -62,8 +68,8 @@ function NavLink({ to, children }: { to: string; children: ReactNode }) {
     <Link
       to={to}
       className={cn(
-        "text-sm font-medium transition-colors hover:text-white",
-        isActive ? "text-white" : "text-textMuted"
+        'text-sm font-medium transition-colors hover:text-white',
+        isActive ? 'text-white' : 'text-textMuted'
       )}
     >
       {children}

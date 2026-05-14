@@ -22,20 +22,24 @@ async function authFetch(path: string, options: RequestInit = {}): Promise<Respo
   return fetch(`${API_BASE}${path}`, { ...options, headers })
 }
 
-export async function getNonce(address: string): Promise<{ nonce: string; message: string }> {
-  const resp = await fetch(`${API_BASE}/auth/nonce?address=${address}`)
-  if (!resp.ok) { const err = await resp.json(); throw new Error(err.error || 'failed to get nonce') }
+export async function fetchMe(): Promise<{ user_id: string; github_login: string | null }> {
+  const resp = await authFetch('/me')
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({}))
+    throw new Error((err as { error?: string }).error || 'not authenticated')
+  }
   return resp.json()
 }
 
-export async function verifySignature(address: string, message: string, signature: string): Promise<{ token: string; address: string }> {
-  const resp = await fetch(`${API_BASE}/auth/verify`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ address, message, signature }),
-  })
-  if (!resp.ok) { const err = await resp.json(); throw new Error(err.error || 'verification failed') }
-  return resp.json()
+/** Public — starts GitHub OAuth (no Bearer token). */
+export async function getGithubLoginUrl(): Promise<string> {
+  const resp = await fetch(`${API_BASE}/github/login`)
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({}))
+    throw new Error((err as { error?: string }).error || 'failed to get OAuth URL')
+  }
+  const data = (await resp.json()) as { url: string }
+  return data.url
 }
 
 // ── Projects ──
@@ -154,17 +158,6 @@ export interface DetectedProject {
 
 export interface FrameworkInfo {
   framework: string | null; color: string | null; pm: string
-}
-
-export async function getGithubOAuthUrl(): Promise<string> {
-  const resp = await authFetch('/github/auth')
-  if (!resp.ok) throw new Error('failed to get OAuth URL')
-  const data = await resp.json(); return data.url
-}
-
-export async function linkGithub(accessToken: string, githubUser: string): Promise<void> {
-  const resp = await authFetch(`/github/link?token=${encodeURIComponent(accessToken)}&gh_user=${encodeURIComponent(githubUser)}`)
-  if (!resp.ok) throw new Error('failed to link GitHub')
 }
 
 export async function getGithubStatus(): Promise<{ connected: boolean; github_user: string | null }> {
