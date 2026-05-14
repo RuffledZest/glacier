@@ -130,18 +130,33 @@ export interface CostEstimate {
   fileCount: number
   totalBytes: number
   sizeGib: number
-  epochs: number | 'max'
+  epochs: number
   network: 'mainnet' | 'testnet'
   estimatedWal: number
   estimatedSuiGas: number
   formula: string
   error?: string
+  /** Full container build log (clone / install / build), when returned by the API */
+  logs?: string
+}
+
+export class EstimateError extends Error {
+  readonly logs?: string
+
+  constructor(message: string, logs?: string) {
+    super(message)
+    this.name = 'EstimateError'
+    this.logs = logs
+  }
 }
 
 export async function estimateCost(req: DeployRequest): Promise<CostEstimate> {
   const resp = await authFetch('/estimate', { method: 'POST', body: JSON.stringify(req) })
-  if (!resp.ok) { const err = await resp.json(); throw new Error(err.error || 'estimation failed') }
-  return resp.json()
+  const data = (await resp.json().catch(() => ({}))) as CostEstimate & { error?: string }
+  if (!resp.ok) {
+    throw new EstimateError(data.error || 'estimation failed', data.logs)
+  }
+  return data
 }
 
 // ── GitHub ──

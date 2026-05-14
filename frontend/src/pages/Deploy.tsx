@@ -5,15 +5,22 @@ import {
   getGithubLoginUrl,
   getGithubStatus,
   listGithubRepos, quickDetectFrameworks, detectRepoProjects,
-  createDeployment, listRepoBranches, estimateCost,
+  createDeployment, listRepoBranches, estimateCost, EstimateError,
   type GithubRepo, type FrameworkInfo, type CostEstimate,
 } from '../lib/api'
+import { renderAnsiLogs } from '../lib/ansi'
+import {
+  activeRetentionDays,
+  formatApproxActiveUntilDate,
+  mainnetTierIndexToEpochs,
+  mainnetTierLabel,
+} from '../lib/epochs'
 import { Button } from '../components/ui/Button'
 import { Card } from '../components/ui/Card'
 import { Badge } from '../components/ui/Badge'
 import { Input } from '../components/ui/Input'
 import { Spinner } from '../components/ui/Spinner'
-import { Search, Lock, Globe, Box, Settings2, ShieldCheck, ChevronDown, Rocket, FileCode2, Package, TerminalSquare } from 'lucide-react'
+import { Search, Lock, Globe, Box, Settings2, ShieldCheck, ChevronDown, Rocket, FileCode2, Package, TerminalSquare, Terminal } from 'lucide-react'
 
 // Simple SVG for GitHub since Lucide v0.300+ removed brand icons
 function GithubIcon({ className }: { className?: string }) {
@@ -77,12 +84,25 @@ export default function Deploy() {
   const [outputDir, setOutputDir] = useState('')
   const [siteName, setSiteName] = useState('')
   const [epochs, setEpochs] = useState<number>(1)
+  /** Mainnet: 0–3 → epoch tiers 2 / 7 / 13 / 26 (default 0 = minimum retention) */
+  const [mainnetTierIndex, setMainnetTierIndex] = useState(0)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [estimating, setEstimating] = useState(false)
   const [estimate, setEstimate] = useState<CostEstimate | null>(null)
+  const [estimateLogsOpen, setEstimateLogsOpen] = useState(false)
+  const [estimateLogsText, setEstimateLogsText] = useState('')
 
   const [showAdvanced, setShowAdvanced] = useState(false)
+
+  const retentionDays = useMemo(
+    () => activeRetentionDays(network, mainnetTierIndex, epochs),
+    [network, mainnetTierIndex, epochs],
+  )
+  const approxActiveUntil = useMemo(
+    () => formatApproxActiveUntilDate(retentionDays),
+    [retentionDays],
+  )
 
   // Init — check GitHub connection (token from OAuth hash is applied in useAuth)
   useEffect(() => {
@@ -90,12 +110,16 @@ export default function Deploy() {
     void loadStatus()
   }, [isAuthenticated])
 
-  // Clamp epochs when network changes
+  // Clamp duration when network changes; reset estimates
   useEffect(() => {
     if (network === 'testnet') {
       setEpochs((prev) => Math.min(Math.max(prev, 1), 7))
+    } else {
+      setMainnetTierIndex(0)
     }
     setEstimate(null)
+    setEstimateLogsOpen(false)
+    setEstimateLogsText('')
   }, [network])
 
   async function loadStatus() {
@@ -144,6 +168,8 @@ export default function Deploy() {
   async function selectRepo(repo: GithubRepo) {
     setSelectedRepo(repo)
     setEstimate(null)
+    setEstimateLogsOpen(false)
+    setEstimateLogsText('')
     setDetecting(true)
     setDetectError(null)
     setProjects([])
@@ -198,7 +224,7 @@ export default function Deploy() {
         buildCommand: buildCmd || undefined,
         outputDir: outputDir || undefined,
         siteName: siteName || undefined,
-        epochs: network === 'mainnet' ? 'max' : (epochs || 1),
+        epochs: network === 'mainnet' ? mainnetTierIndexToEpochs(mainnetTierIndex) : (epochs || 1),
       })
       navigate(`/deployments/${result.id}`)
     } catch (err) {
@@ -212,6 +238,8 @@ export default function Deploy() {
     setEstimating(true)
     setEstimate(null)
     setError(null)
+    setEstimateLogsOpen(true)
+    setEstimateLogsText('')
     try {
       const result = await estimateCost({
         repoUrl: selectedRepo.clone_url,
@@ -221,15 +249,18 @@ export default function Deploy() {
         installCommand: installCmd || undefined,
         buildCommand: buildCmd || undefined,
         outputDir: outputDir || undefined,
-        epochs: network === 'mainnet' ? 'max' : (epochs || 1),
+        epochs: network === 'mainnet' ? mainnetTierIndexToEpochs(mainnetTierIndex) : (epochs || 1),
       })
-      if (result.error) {
-        setError(result.error)
-      } else {
-        setEstimate(result)
-      }
+      setEstimate(result)
+      setEstimateLogsText(result.logs ?? '')
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Estimation failed')
+      if (err instanceof EstimateError) {
+        setError(err.message)
+        setEstimateLogsText(err.logs ?? '')
+      } else {
+        setError(err instanceof Error ? err.message : 'Estimation failed')
+        setEstimateLogsText('')
+      }
     } finally {
       setEstimating(false)
     }
@@ -474,27 +505,42 @@ export default function Deploy() {
                 </div>
               </div>
 
-              {/* Epochs Slider */}
+              {/* Storage duration (human time; API uses epochs) */}
               <div className="space-y-3">
-                <div className="flex justify-between items-center">
-                  <label className="text-xs font-semibold text-textMuted uppercase tracking-wider">Storage Epochs</label>
-                  <span className="text-sm font-bold text-info">
-                    {network === 'mainnet' ? 'Max' : epochs}
+                <div className="flex justify-between items-center gap-2">
+                  <label className="text-xs font-semibold text-textMuted uppercase tracking-wider">Storage duration</label>
+                  <span className="text-sm font-bold text-info text-right">
+                    {network === 'mainnet'
+                      ? mainnetTierLabel(mainnetTierIndex)
+                      : `${epochs} ${epochs === 1 ? 'day' : 'days'}`}
                   </span>
                 </div>
                 {network === 'mainnet' ? (
-                  <div className="h-2 bg-surface rounded-full overflow-hidden">
-                    <div className="h-full bg-info/50 w-full"></div>
-                  </div>
+                  <input
+                    type="range"
+                    min={0}
+                    max={3}
+                    step={1}
+                    value={mainnetTierIndex}
+                    onChange={(e) => setMainnetTierIndex(Number(e.target.value))}
+                    className="w-full accent-info"
+                  />
                 ) : (
                   <input
                     type="range"
-                    min={1} max={7} step={1}
+                    min={1}
+                    max={7}
+                    step={1}
                     value={epochs}
                     onChange={(e) => setEpochs(Number(e.target.value))}
                     className="w-full accent-info"
                   />
                 )}
+                <p className="text-xs text-textMuted leading-snug">
+                  Approximately active until{' '}
+                  <span className="text-textMuted/90">{approxActiveUntil}</span>
+                  {' '}(from today; chain timing may differ slightly).
+                </p>
               </div>
 
               {/* Advanced Settings Toggle */}
@@ -573,13 +619,50 @@ export default function Deploy() {
                       <span className="font-semibold text-info">~{estimate.estimatedSuiGas} SUI</span>
                     </div>
                     <div className="mt-3 pt-3 border-t border-info/20 text-xs text-textMuted font-mono text-center">
-                      <button onClick={() => setEstimate(null)} className="hover:text-white underline decoration-textMuted/50">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEstimate(null)
+                          setEstimateLogsOpen(false)
+                          setEstimateLogsText('')
+                        }}
+                        className="hover:text-white underline decoration-textMuted/50"
+                      >
                         Recalculate
                       </button>
                     </div>
                   </div>
                 )}
               </div>
+
+              {estimateLogsOpen && (
+                <div className="rounded-lg border border-border overflow-hidden bg-black flex flex-col min-h-[220px] max-h-[min(480px,50vh)]">
+                  <div className="bg-surface border-b border-border px-3 py-2 flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-2 text-xs font-medium text-textMuted">
+                      <Terminal className="w-3.5 h-3.5" />
+                      Cost estimate — build output
+                    </div>
+                    {estimating && (
+                      <span className="text-[10px] font-medium text-warning bg-warning/10 px-2 py-0.5 rounded-full flex items-center gap-1.5">
+                        <span className="w-1.5 h-1.5 rounded-full bg-warning animate-pulse" />
+                        Running
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex-1 p-3 overflow-x-auto overflow-y-auto font-mono text-xs leading-relaxed min-h-0">
+                    {estimating && !estimateLogsText ? (
+                      <p className="text-textMuted">Cloning repository and running install / build on the worker…</p>
+                    ) : estimateLogsText ? (
+                      <pre
+                        className="text-textMuted whitespace-pre-wrap break-words"
+                        dangerouslySetInnerHTML={{ __html: renderAnsiLogs(estimateLogsText) }}
+                      />
+                    ) : (
+                      <p className="text-textMuted">(no log output)</p>
+                    )}
+                  </div>
+                </div>
+              )}
 
               <Button
                 size="lg"

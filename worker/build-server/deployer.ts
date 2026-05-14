@@ -143,8 +143,8 @@ async function estimateCost(
 
     let epochCount: bigint
     if (epochs === 'max') {
-      epochCount = 53n
-      logs.push('Using max epochs: 53')
+      epochCount = 26n
+      logs.push('Using max epochs: 26 (mainnet ~1 year)')
     } else {
       epochCount = BigInt(epochs)
     }

@@ -5,6 +5,7 @@ import { verifyJwt } from '../auth'
 import { createDeployment, updateDeployment, getDeployment, getDeployments, getDb, upsertProject, getProjects, getProject, deleteProject, getDeploymentsByRepo } from '../db'
 import type { DeployRequest, BuildRequest, DeployCommand } from '../types'
 import { detectFromGithubApi } from '../auto-detect'
+import { resolveMainnetEpochs, resolveTestnetEpochs } from '../epochs'
 
 const router = new Hono<{ Bindings: Env }>()
 
@@ -37,11 +38,14 @@ router.post('/deploy', async (c) => {
     return c.json({ error: 'network must be mainnet or testnet' }, 400)
   }
 
-  // Validate epochs: testnet capped at 7, mainnet always max
-  const epochs = network === 'mainnet' ? 'max' as const
-    : body.epochs && body.epochs !== 'max' && (typeof body.epochs === 'number')
-      ? Math.max(1, Math.min(body.epochs, 7))
-      : 1
+  let epochs: number
+  if (network === 'mainnet') {
+    const r = resolveMainnetEpochs(body.epochs)
+    if (!r.ok) return c.json({ error: r.error }, 400)
+    epochs = r.epochs
+  } else {
+    epochs = resolveTestnetEpochs(body.epochs)
+  }
 
   let baseDir = body.baseDir || '.'
   let installCommand = body.installCommand
@@ -213,7 +217,7 @@ router.post('/deployments/:id/retry', async (c) => {
       deployment.buildCommand || undefined,
       deployment.outputDir || undefined,
       deployment.network,
-      undefined,
+      deployment.network === 'mainnet' ? 2 : 1,
       undefined
     )
   )
@@ -419,7 +423,7 @@ async function runBuildAndDeploy(
   buildCommand: string | undefined,
   outputDir: string | undefined,
   network: 'mainnet' | 'testnet',
-  epochs?: number | 'max',
+  epochs: number,
   siteName?: string
 ): Promise<void> {
   try {

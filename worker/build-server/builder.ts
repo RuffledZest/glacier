@@ -66,9 +66,22 @@ function safeAppend(logPath: string, data: string): void {
   }
 }
 
-function runAsync(cmd: string, cwd: string, logPath: string): Promise<{ exitCode: number }> {
+function childEnv(phase: 'clone' | 'install' | 'build'): NodeJS.ProcessEnv {
+  const { NODE_ENV: _drop, ...rest } = process.env
+  const base: NodeJS.ProcessEnv = { ...rest, HOME: '/root', PATH: process.env.PATH }
+  if (phase === 'install') {
+    // Image sets NODE_ENV=production; npm omits devDependencies in that case. Install needs tsc/vite/etc.
+    return base
+  }
+  if (phase === 'build') {
+    return { ...base, NODE_ENV: 'production' }
+  }
+  return base
+}
+
+function runAsync(cmd: string, cwd: string, logPath: string, phase: 'clone' | 'install' | 'build'): Promise<{ exitCode: number }> {
   return new Promise((resolve) => {
-    const proc = spawn(cmd, { shell: true, cwd, env: { ...process.env, HOME: '/root', PATH: process.env.PATH, NODE_ENV: process.env.NODE_ENV || 'production' } })
+    const proc = spawn(cmd, { shell: true, cwd, env: childEnv(phase) })
     proc.stdout.on('data', (d: Buffer) => safeAppend(logPath, d.toString()))
     proc.stderr.on('data', (d: Buffer) => safeAppend(logPath, d.toString()))
     proc.on('close', (code) => resolve({ exitCode: code ?? 1 }))
@@ -194,7 +207,7 @@ async function runBuildAsync(params: BuildParams, buildDir: string, logPath: str
     }
 
     log(`Cloning ${repoUrl} (branch: ${branch})...`)
-    const cloneResult = await runAsync(`git clone --depth 1 --single-branch --branch "${branch}" "${cloneUrl}" "${repoDir}"`, buildDir, logPath)
+    const cloneResult = await runAsync(`git clone --depth 1 --single-branch --branch "${branch}" "${cloneUrl}" "${repoDir}"`, buildDir, logPath, 'clone')
 
     if (githubToken) sanitizeGitConfig(repoDir, githubToken)
 
@@ -236,7 +249,7 @@ async function runBuildAsync(params: BuildParams, buildDir: string, logPath: str
 
     // Install
     log(`Running ${installCommand}...`)
-    const installResult = await runAsync(installCommand!, workingDir, logPath)
+    const installResult = await runAsync(installCommand!, workingDir, logPath, 'install')
     if (installResult.exitCode !== 0) {
       log('Install failed')
       writeState(buildId, { status: 'error', error: 'install failed' })
@@ -246,7 +259,7 @@ async function runBuildAsync(params: BuildParams, buildDir: string, logPath: str
 
     // Build
     log(`Running ${buildCommand}...`)
-    const buildResult = await runAsync(buildCommand!, workingDir, logPath)
+    const buildResult = await runAsync(buildCommand!, workingDir, logPath, 'build')
     if (buildResult.exitCode !== 0) {
       log('Build failed')
       writeState(buildId, { status: 'error', error: 'build failed' })

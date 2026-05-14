@@ -4,6 +4,7 @@ import type { Env } from '..'
 import { verifyJwt } from '../auth'
 import type { BuildRequest } from '../types'
 import { detectFromGithubApi } from '../auto-detect'
+import { resolveMainnetEpochs, resolveTestnetEpochs } from '../epochs'
 
 const router = new Hono<{ Bindings: Env }>()
 
@@ -29,10 +30,14 @@ router.post('/estimate', async (c) => {
   if (!repoUrl) return c.json({ error: 'repoUrl is required' }, 400)
   if (!repoUrl.startsWith('https://github.com/')) return c.json({ error: 'only GitHub repositories are supported' }, 400)
 
-  const epochs = network === 'mainnet' ? 'max'
-    : body.epochs && body.epochs !== 'max' && typeof body.epochs === 'number'
-      ? Math.max(1, Math.min(body.epochs, 7))
-      : 1
+  let epochCount: number
+  if (network === 'mainnet') {
+    const r = resolveMainnetEpochs(body.epochs)
+    if (!r.ok) return c.json({ error: r.error }, 400)
+    epochCount = r.epochs
+  } else {
+    epochCount = resolveTestnetEpochs(body.epochs)
+  }
 
   let baseDir = body.baseDir || '.'
   let installCommand = body.installCommand
@@ -52,6 +57,17 @@ router.post('/estimate', async (c) => {
   }
 
   const estimateId = crypto.randomUUID()
+
+  async function readContainerLogs(container: ReturnType<typeof getContainer>): Promise<string> {
+    try {
+      const logResp = await container.fetch(new Request(`http://localhost/logs/${estimateId}`))
+      if (!logResp.ok) return ''
+      const data = await logResp.json() as { logs?: string }
+      return (data.logs || '').slice(-500_000)
+    } catch {
+      return ''
+    }
+  }
 
   try {
     const container = getContainer(c.env.BUILD_CONTAINER, estimateId)
@@ -123,11 +139,13 @@ router.post('/estimate', async (c) => {
     }
 
     if (error || !distPath) {
-      return c.json({ error: error || 'build timed out or failed' }, 500)
+      const logs = await readContainerLogs(container)
+      return c.json({ error: error || 'build timed out or failed', logs }, 500)
     }
 
+    const logs = await readContainerLogs(container)
+
     const sizeGib = totalBytes / (1024 * 1024 * 1024)
-    const epochCount = epochs === 'max' ? 183 : epochs
     const estimatedWal = sizeGib * epochCount * WAL_PER_GIB_PER_EPOCH
 
     return c.json({
@@ -136,11 +154,12 @@ router.post('/estimate', async (c) => {
       fileCount,
       totalBytes,
       sizeGib: Math.max(sizeGib, 0.0001),
-      epochs: epochs === 'max' ? 'max' : epochCount,
+      epochs: epochCount,
       network,
       estimatedWal: Math.max(estimatedWal, 0.0001),
       estimatedSuiGas: SUI_GAS_ESTIMATE,
       formula: `${WAL_PER_GIB_PER_EPOCH} WAL/GiB/epoch × ${sizeGib.toFixed(4)} GiB × ${epochCount} epochs`,
+      logs,
     })
   } catch (err) {
     return c.json({

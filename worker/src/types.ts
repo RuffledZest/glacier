@@ -15,6 +15,7 @@ export interface DeployRequest {
   installCommand?: string
   buildCommand?: string
   outputDir?: string
+  /** Mainnet: 2 | 7 | 13 | 26, or omit (→2) / `"max"` (→26 legacy). Testnet: 1–7 (≈ days). */
   epochs?: number | 'max'
   siteName?: string
 }
