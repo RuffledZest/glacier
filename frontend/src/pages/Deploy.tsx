@@ -5,8 +5,8 @@ import {
   getGithubLoginUrl,
   getGithubStatus,
   listGithubRepos, quickDetectFrameworks, detectRepoProjects,
-  createDeployment, listRepoBranches, estimateCost, EstimateError,
-  type GithubRepo, type FrameworkInfo, type CostEstimate,
+  createDeployment, listRepoBranches, listRepoCommits, estimateCost, EstimateError,
+  type GithubRepo, type FrameworkInfo, type CostEstimate, type GithubCommit,
 } from '../lib/api'
 import { renderAnsiLogs } from '../lib/ansi'
 import {
@@ -95,6 +95,14 @@ function parseEnvText(content: string): Record<string, string> {
   return result
 }
 
+function shortSha(sha: string | null | undefined): string {
+  return sha ? sha.slice(0, 7) : ''
+}
+
+function commitTitle(message: string | null | undefined): string {
+  return (message || 'No commit message').split('\n')[0]
+}
+
 export default function Deploy() {
   const { isAuthenticated, login } = useAuth()
   const navigate = useNavigate()
@@ -126,6 +134,11 @@ export default function Deploy() {
   // Form state
   const [branch, setBranch] = useState('main')
   const [branches, setBranches] = useState<string[]>([])
+  const [commits, setCommits] = useState<GithubCommit[]>([])
+  const [loadingCommits, setLoadingCommits] = useState(false)
+  const [commitMode, setCommitMode] = useState<'latest' | 'specific'>('latest')
+  const [selectedCommitSha, setSelectedCommitSha] = useState('')
+  const [manualCommitSha, setManualCommitSha] = useState('')
   const [network, setNetwork] = useState<'mainnet' | 'testnet'>('testnet')
   const [baseDir, setBaseDir] = useState('')
   const [installCmd, setInstallCmd] = useState('')
@@ -181,6 +194,17 @@ export default function Deploy() {
     setEstimateLogsText('')
   }, [network])
 
+  useEffect(() => {
+    if (!selectedRepo || !branch) return
+    setCommitMode('latest')
+    setSelectedCommitSha('')
+    setManualCommitSha('')
+    setEstimate(null)
+    setEstimateLogsOpen(false)
+    setEstimateLogsText('')
+    void loadCommits(selectedRepo, branch)
+  }, [selectedRepo, branch])
+
   async function loadStatus() {
     try {
       const s = await getGithubStatus()
@@ -221,6 +245,23 @@ export default function Deploy() {
       const results = await quickDetectFrameworks(batch)
       setFrameworks((prev) => ({ ...prev, ...results }))
     } catch {} finally { setDetectingFw(false) }
+  }
+
+  async function loadCommits(repo: GithubRepo, branchName: string) {
+    setLoadingCommits(true)
+    try {
+      const [owner, repoName] = repo.full_name.split('/')
+      setCommits(await listRepoCommits(owner, repoName, branchName))
+    } catch {
+      setCommits([])
+    } finally {
+      setLoadingCommits(false)
+    }
+  }
+
+  function commitShaForRequest(): string | undefined {
+    if (commitMode !== 'specific') return undefined
+    return (manualCommitSha || selectedCommitSha).trim() || undefined
   }
 
   // Select repo → deep detect
@@ -271,6 +312,11 @@ export default function Deploy() {
 
   async function handleDeploy() {
     if (!selectedRepo) return
+    const commitSha = commitShaForRequest()
+    if (commitMode === 'specific' && !commitSha) {
+      setError('Select a commit or paste a commit SHA.')
+      return
+    }
     if (parsedEnv.error) {
       setError(parsedEnv.error)
       return
@@ -281,6 +327,7 @@ export default function Deploy() {
       const result = await createDeployment({
         repoUrl: selectedRepo.clone_url,
         branch: branch || undefined,
+        commitSha,
         network,
         baseDir: baseDir || undefined,
         installCommand: installCmd || undefined,
@@ -299,6 +346,11 @@ export default function Deploy() {
 
   async function handleEstimate() {
     if (!selectedRepo) return
+    const commitSha = commitShaForRequest()
+    if (commitMode === 'specific' && !commitSha) {
+      setError('Select a commit or paste a commit SHA.')
+      return
+    }
     if (parsedEnv.error) {
       setError(parsedEnv.error)
       return
@@ -312,6 +364,7 @@ export default function Deploy() {
       const result = await estimateCost({
         repoUrl: selectedRepo.clone_url,
         branch: branch || undefined,
+        commitSha,
         network,
         baseDir: baseDir || undefined,
         installCommand: installCmd || undefined,
@@ -577,6 +630,76 @@ export default function Deploy() {
                     <Input value={branch} onChange={(e) => setBranch(e.target.value)} />
                   )}
                 </div>
+              </div>
+
+              <div className="space-y-2">
+                <div className="flex items-center justify-between gap-3">
+                  <label className="text-xs font-semibold text-textMuted uppercase tracking-wider">Commit</label>
+                  {loadingCommits && <Spinner className="w-3.5 h-3.5 text-textMuted" />}
+                </div>
+                <select
+                  value={commitMode}
+                  onChange={(e) => {
+                    setCommitMode(e.target.value as 'latest' | 'specific')
+                    setSelectedCommitSha('')
+                    setManualCommitSha('')
+                    setEstimate(null)
+                  }}
+                  className="w-full h-10 px-3 bg-surface border border-border rounded-md text-sm focus:outline-none focus:ring-1 focus:ring-primary appearance-none"
+                >
+                  <option value="latest">Latest on {branch || 'branch'}</option>
+                  <option value="specific">Specific commit</option>
+                </select>
+
+                {commitMode === 'latest' ? (
+                  <div className="rounded-lg border border-border bg-surface/50 px-3 py-2 text-xs text-textMuted">
+                    {commits[0] ? (
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2 text-white">
+                          <span className="font-mono text-info">{shortSha(commits[0].sha)}</span>
+                          <span className="truncate">{commitTitle(commits[0].message)}</span>
+                        </div>
+                        {commits[0].authorName && (
+                          <div className="mt-1 truncate">
+                            {commits[0].authorName}
+                            {commits[0].authorDate ? ` • ${new Date(commits[0].authorDate).toLocaleString()}` : ''}
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <span>{loadingCommits ? 'Loading latest commit...' : 'Latest commit will be resolved when deployment starts.'}</span>
+                    )}
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    <select
+                      value={selectedCommitSha}
+                      onChange={(e) => {
+                        setSelectedCommitSha(e.target.value)
+                        if (e.target.value) setManualCommitSha('')
+                        setEstimate(null)
+                      }}
+                      className="w-full h-10 px-3 bg-surface border border-border rounded-md text-sm focus:outline-none focus:ring-1 focus:ring-primary appearance-none"
+                    >
+                      <option value="">Recent commits on {branch || 'branch'}</option>
+                      {commits.map((commit) => (
+                        <option key={commit.sha} value={commit.sha}>
+                          {shortSha(commit.sha)} — {commitTitle(commit.message)}
+                        </option>
+                      ))}
+                    </select>
+                    <Input
+                      value={manualCommitSha}
+                      onChange={(e) => {
+                        setManualCommitSha(e.target.value)
+                        if (e.target.value) setSelectedCommitSha('')
+                        setEstimate(null)
+                      }}
+                      placeholder="Or paste a commit SHA"
+                      className="font-mono text-sm"
+                    />
+                  </div>
+                )}
               </div>
 
               {/* Storage duration (human time; API uses epochs) */}

@@ -8,6 +8,7 @@ import {
   listContents,
   detectProjects,
   quickDetectBatch,
+  listCommits,
 } from '../github-api'
 
 const router = new Hono<{ Bindings: Env }>()
@@ -196,6 +197,35 @@ router.get('/repos/:owner/:repo/contents', async (c) => {
 
   const contents = await listContents(row.access_token, owner, repo, path)
   return c.json({ contents })
+})
+
+// GET /api/github/repos/:owner/:repo/commits — recent commits for branch picker
+router.get('/repos/:owner/:repo/commits', async (c) => {
+  const authHeader = c.req.header('Authorization')
+  if (!authHeader?.startsWith('Bearer ')) {
+    return c.json({ error: 'missing authorization header' }, 401)
+  }
+
+  const jwt = authHeader.slice(7)
+  const payload = await verifyJwt(jwt, c.env.JWT_SECRET)
+  if (!payload) {
+    return c.json({ error: 'invalid or expired token' }, 401)
+  }
+
+  const db = c.env.DB
+  const row = await db
+    .prepare('SELECT access_token FROM github_tokens WHERE user_address = ?1')
+    .bind(payload.address as string)
+    .first<{ access_token: string }>()
+
+  if (!row) {
+    return c.json({ error: 'GitHub not connected' }, 401)
+  }
+
+  const { owner, repo } = c.req.param()
+  const branch = c.req.query('branch') || 'main'
+  const commits = await listCommits(row.access_token, owner, repo, branch, 20)
+  return c.json({ commits })
 })
 
 // POST /api/github/repos/:owner/:repo/detect — deep scan for deployable projects

@@ -120,6 +120,8 @@ export async function deleteProjectSecret(id: string, name: string): Promise<Pro
 
 export interface Deployment {
   id: string; userAddress: string; repoUrl: string; branch: string; baseDir: string
+  commitSha: string | null; commitRef: string | null; commitMessage: string | null
+  commitAuthorName: string | null; commitAuthorDate: string | null; commitUrl: string | null
   installCommand: string | null; buildCommand: string | null; outputDir: string | null
   network: 'mainnet' | 'testnet'
   /** Walrus storage epochs; null on older deployments */
@@ -131,6 +133,7 @@ export interface Deployment {
 
 export interface DeployRequest {
   repoUrl: string; branch?: string; network?: 'mainnet' | 'testnet'
+  commitSha?: string
   baseDir?: string; installCommand?: string; buildCommand?: string; outputDir?: string; siteName?: string
   epochs?: number | 'max'
   env?: Record<string, string>
@@ -163,6 +166,18 @@ export async function deleteDeployment(id: string): Promise<void> {
 export async function retryDeployment(id: string): Promise<{ id: string; status: string }> {
   const resp = await authFetch(`/deployments/${id}/retry`, { method: 'POST' })
   if (!resp.ok) { const err = await resp.json(); throw new Error(err.error || 'retry failed') }
+  return resp.json()
+}
+
+export async function redeployDeployment(id: string): Promise<{ id: string; status: string }> {
+  const resp = await authFetch(`/deployments/${id}/redeploy`, { method: 'POST' })
+  if (!resp.ok) { const err = await resp.json(); throw new Error(err.error || 'redeploy failed') }
+  return resp.json()
+}
+
+export async function deployLatestProject(id: string): Promise<{ id: string; status: string }> {
+  const resp = await authFetch(`/projects/${id}/deploy-latest`, { method: 'POST' })
+  if (!resp.ok) { const err = await resp.json(); throw new Error(err.error || 'deploy latest failed') }
   return resp.json()
 }
 
@@ -211,6 +226,14 @@ export interface GithubRepo {
   description: string | null; updated_at: string; language: string | null
 }
 
+export interface GithubCommit {
+  sha: string
+  message: string
+  authorName: string | null
+  authorDate: string | null
+  htmlUrl: string | null
+}
+
 export interface DetectedProject {
   folder: string; packageManager: string; installCommand: string; buildCommand: string; outputDir: string; framework?: string
 }
@@ -241,6 +264,12 @@ export async function listRepoBranches(owner: string, repo: string): Promise<str
   const resp = await authFetch(`/github/repos/${owner}/${repo}/branches`)
   if (!resp.ok) return ['main']
   const data = await resp.json(); return data.branches || ['main']
+}
+
+export async function listRepoCommits(owner: string, repo: string, branch: string): Promise<GithubCommit[]> {
+  const resp = await authFetch(`/github/repos/${owner}/${repo}/commits?branch=${encodeURIComponent(branch)}`)
+  if (!resp.ok) return []
+  const data = await resp.json(); return data.commits || []
 }
 
 export async function quickDetectFrameworks(repos: Array<{ owner: string; name: string; branch: string }>): Promise<Record<string, FrameworkInfo>> {

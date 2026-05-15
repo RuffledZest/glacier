@@ -6,6 +6,7 @@ import { detectFramework } from './detector.js'
 interface BuildParams {
   repoUrl: string
   branch: string
+  commitSha?: string
   baseDir?: string
   installCommand?: string
   buildCommand?: string
@@ -248,7 +249,7 @@ export function startBuild(params: BuildParams & { buildId?: string }): string {
 }
 
 async function runBuildAsync(params: BuildParams, buildDir: string, logPath: string, buildId: string): Promise<void> {
-  const { repoUrl, branch = 'main', baseDir: baseDirOverride, installCommand: installOverride, buildCommand: buildOverride, outputDir: outputOverride, githubToken } = params
+  const { repoUrl, branch = 'main', commitSha, baseDir: baseDirOverride, installCommand: installOverride, buildCommand: buildOverride, outputDir: outputOverride, githubToken } = params
   const projectEnv = params.env || {}
   const redactor = createLogRedactor(projectEnv)
   const log = (msg: string) => safeAppend(logPath, msg + '\n', redactor)
@@ -264,7 +265,13 @@ async function runBuildAsync(params: BuildParams, buildDir: string, logPath: str
       cloneUrl = cloneUrl.replace('https://', `https://${githubToken}@`)
     }
 
-    log(`Cloning ${repoUrl} (branch: ${branch})...`)
+    if (commitSha && !/^[0-9a-f]{7,40}$/i.test(commitSha)) {
+      log(`Invalid commit SHA: ${commitSha}`)
+      writeState(buildId, { status: 'error', error: 'invalid commit SHA' })
+      return
+    }
+
+    log(`Cloning ${repoUrl} (branch: ${branch}${commitSha ? `, commit: ${commitSha.slice(0, 12)}` : ''})...`)
     const cloneResult = await runAsync(`git clone --depth 1 --single-branch --branch "${branch}" "${cloneUrl}" "${repoDir}"`, buildDir, logPath, 'clone')
 
     if (githubToken) sanitizeGitConfig(repoDir, githubToken)
@@ -273,6 +280,26 @@ async function runBuildAsync(params: BuildParams, buildDir: string, logPath: str
       log('Clone failed')
       writeState(buildId, { status: 'error', error: 'git clone failed' })
       return
+    }
+
+    if (commitSha) {
+      log(`Checking out commit ${commitSha.slice(0, 12)}...`)
+      let checkoutResult = await runAsync(`git checkout --detach "${commitSha}"`, repoDir, logPath, 'clone')
+      if (checkoutResult.exitCode !== 0) {
+        log('Commit was not available in the shallow clone; fetching branch history...')
+        const fetchResult = await runAsync(`git fetch --unshallow origin "${branch}"`, repoDir, logPath, 'clone')
+        if (fetchResult.exitCode !== 0) {
+          log('Fetching full branch history failed')
+          writeState(buildId, { status: 'error', error: 'git fetch failed' })
+          return
+        }
+        checkoutResult = await runAsync(`git checkout --detach "${commitSha}"`, repoDir, logPath, 'clone')
+      }
+      if (checkoutResult.exitCode !== 0) {
+        log('Commit checkout failed')
+        writeState(buildId, { status: 'error', error: 'git checkout failed' })
+        return
+      }
     }
     log('Clone complete')
 

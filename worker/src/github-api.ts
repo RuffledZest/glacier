@@ -31,6 +31,14 @@ export interface DetectedProject {
   framework?: string
 }
 
+export interface GithubCommit {
+  sha: string
+  message: string
+  authorName: string | null
+  authorDate: string | null
+  htmlUrl: string | null
+}
+
 export function getOAuthUrl(clientId: string, redirectUri: string, state: string): string {
   const params = new URLSearchParams({
     client_id: clientId,
@@ -118,6 +126,62 @@ export async function listRepos(token: string, page = 1, perPage = 50): Promise<
   )
   if (!resp.ok) throw new Error(`GitHub API error: ${resp.status}`)
   return (await resp.json()) as GithubRepo[]
+}
+
+function mapCommit(data: {
+  sha?: string
+  html_url?: string
+  commit?: {
+    message?: string
+    author?: { name?: string; date?: string } | null
+  }
+}): GithubCommit | null {
+  if (!data.sha) return null
+  return {
+    sha: data.sha,
+    message: data.commit?.message || '',
+    authorName: data.commit?.author?.name || null,
+    authorDate: data.commit?.author?.date || null,
+    htmlUrl: data.html_url || null,
+  }
+}
+
+export async function getCommit(token: string, owner: string, repo: string, ref: string): Promise<GithubCommit | null> {
+  const resp = await ghFetch(token, `/repos/${owner}/${repo}/commits/${encodeURIComponent(ref)}`)
+  if (!resp.ok) return null
+  return mapCommit(await resp.json())
+}
+
+export async function listCommits(
+  token: string,
+  owner: string,
+  repo: string,
+  branch: string,
+  perPage = 20,
+): Promise<GithubCommit[]> {
+  const params = new URLSearchParams({ sha: branch, per_page: String(perPage) })
+  const resp = await ghFetch(token, `/repos/${owner}/${repo}/commits?${params}`)
+  if (!resp.ok) return []
+  const data = (await resp.json()) as unknown[]
+  return data
+    .map((item) => mapCommit(item as Parameters<typeof mapCommit>[0]))
+    .filter((item): item is GithubCommit => !!item)
+}
+
+export async function isCommitReachableFromRef(
+  token: string,
+  owner: string,
+  repo: string,
+  commitSha: string,
+  branch: string,
+): Promise<boolean> {
+  const resp = await ghFetch(
+    token,
+    `/repos/${owner}/${repo}/compare/${encodeURIComponent(commitSha)}...${encodeURIComponent(branch)}`
+  )
+  if (!resp.ok) return false
+  const data = (await resp.json()) as { status?: string }
+  return data.status === 'identical' || data.status === 'ahead'
 }
 
 export async function listContents(

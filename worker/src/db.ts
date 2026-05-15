@@ -242,14 +242,21 @@ export async function createDeployment(
   await db
     .prepare(
       `INSERT INTO deployments
-       (id, user_address, repo_url, branch, base_dir, install_command, build_command, output_dir, network, epochs, status, logs)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)`
+       (id, user_address, repo_url, branch, commit_sha, commit_ref, commit_message, commit_author_name, commit_author_date, commit_url,
+        base_dir, install_command, build_command, output_dir, network, epochs, status, logs)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)`
     )
     .bind(
       deployment.id,
       deployment.userAddress,
       deployment.repoUrl,
       deployment.branch,
+      deployment.commitSha ?? null,
+      deployment.commitRef ?? null,
+      deployment.commitMessage ?? null,
+      deployment.commitAuthorName ?? null,
+      deployment.commitAuthorDate ?? null,
+      deployment.commitUrl ?? null,
       deployment.baseDir,
       deployment.installCommand ?? null,
       deployment.buildCommand ?? null,
@@ -369,6 +376,12 @@ function mapRow(row: Record<string, unknown>): Deployment {
     userAddress: row.user_address as string,
     repoUrl: row.repo_url as string,
     branch: row.branch as string,
+    commitSha: typeof row.commit_sha === 'string' ? row.commit_sha : null,
+    commitRef: typeof row.commit_ref === 'string' ? row.commit_ref : null,
+    commitMessage: typeof row.commit_message === 'string' ? row.commit_message : null,
+    commitAuthorName: typeof row.commit_author_name === 'string' ? row.commit_author_name : null,
+    commitAuthorDate: typeof row.commit_author_date === 'string' ? row.commit_author_date : null,
+    commitUrl: typeof row.commit_url === 'string' ? row.commit_url : null,
     baseDir: row.base_dir as string,
     installCommand: row.install_command as string | null,
     buildCommand: row.build_command as string | null,

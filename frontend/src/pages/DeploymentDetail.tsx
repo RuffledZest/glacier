@@ -1,7 +1,7 @@
 import { useEffect, useState, useRef } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
 import { useAuth } from '../hooks/useAuth'
-import { getDeployment, deleteDeployment, retryDeployment, getToken, type Deployment, type Project, listProjects } from '../lib/api'
+import { getDeployment, deleteDeployment, retryDeployment, redeployDeployment, getToken, type Deployment, type Project, listProjects } from '../lib/api'
 import { renderAnsiLogs } from '../lib/ansi'
 import { useSSE } from '../hooks/useSSE'
 import { encodeRepoUrl, repoDisplay } from '../lib/repos'
@@ -33,6 +33,16 @@ const STATUS: Record<string, { color: 'success' | 'warning' | 'danger' | 'info' 
   failed:    { color: 'danger', label: 'Failed', icon: <XCircle className="w-3 h-3" /> },
 }
 
+function shortSha(sha: string | null | undefined): string {
+  return sha ? sha.slice(0, 7) : 'unknown'
+}
+
+function commitTitle(message: string | null | undefined): string {
+  return (message || 'Unknown commit').split('\n')[0]
+}
+
+const ACTIVE_DEPLOYMENT_STATUSES = new Set(['queued', 'building', 'built', 'deploying'])
+
 export default function DeploymentDetail() {
   const { id } = useParams<{ id: string }>()
   const { isAuthenticated } = useAuth()
@@ -43,6 +53,7 @@ export default function DeploymentDetail() {
   const [error, setError] = useState<string | null>(null)
   const [deleting, setDeleting] = useState(false)
   const [retrying, setRetrying] = useState(false)
+  const [redeploying, setRedeploying] = useState(false)
   const [liveLogs, setLiveLogs] = useState('')
   const [sseDone, setSseDone] = useState(false)
   const logsEndRef = useRef<HTMLDivElement>(null)
@@ -143,6 +154,18 @@ export default function DeploymentDetail() {
     }
   }
 
+  async function handleRedeploy() {
+    if (!id) return
+    setRedeploying(true)
+    try {
+      const { id: newId } = await redeployDeployment(id)
+      navigate(`/deployments/${newId}`)
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Redeploy failed')
+      setRedeploying(false)
+    }
+  }
+
   if (!isAuthenticated) {
     return (
       <div className="flex flex-col items-center justify-center py-20 text-center">
@@ -219,6 +242,7 @@ export default function DeploymentDetail() {
                   </h1>
                   <div className="flex items-center gap-4 text-sm text-textMuted">
                     <span className="flex items-center gap-1.5"><GitBranch className="w-4 h-4" /> {d.branch}</span>
+                    <span className="flex items-center gap-1.5" title={d.commitMessage || undefined}><Hash className="w-4 h-4" /> {shortSha(d.commitSha)}</span>
                     <span className="flex items-center gap-1.5"><Globe className="w-4 h-4" /> {d.network === 'testnet' ? 'Testnet' : 'Mainnet'}</span>
                   </div>
                 </div>
@@ -259,6 +283,12 @@ export default function DeploymentDetail() {
                 <Button variant="primary" onClick={handleRetry} disabled={retrying}>
                   {retrying ? <Spinner className="mr-2" /> : <RotateCcw className="w-4 h-4 mr-2" />}
                   {retrying ? 'Retrying...' : 'Retry Build'}
+                </Button>
+              )}
+              {!ACTIVE_DEPLOYMENT_STATUSES.has(d.status) && d.status !== 'deleted' && (
+                <Button variant="secondary" onClick={handleRedeploy} disabled={redeploying}>
+                  {redeploying ? <Spinner className="mr-2" /> : <RotateCcw className="w-4 h-4 mr-2" />}
+                  {redeploying ? 'Redeploying...' : 'Redeploy'}
                 </Button>
               )}
               <Button variant="danger" onClick={handleDelete} disabled={deleting}>
@@ -315,6 +345,31 @@ export default function DeploymentDetail() {
                 <DetailRow icon={<Hash className="w-4 h-4" />} label="Deployment ID" value={d.id.slice(0, 8) + '...'} />
                 <DetailRow icon={<Calendar className="w-4 h-4" />} label="Created At" value={new Date(d.createdAt).toLocaleString()} />
                 <DetailRow icon={<Clock className="w-4 h-4" />} label="Updated At" value={new Date(d.updatedAt).toLocaleString()} />
+              </div>
+
+              <div className="h-px bg-border/50 w-full" />
+
+              <div className="space-y-4">
+                <h4 className="text-xs font-semibold uppercase tracking-wider text-textMuted mb-2">Source Commit</h4>
+                <DetailRow icon={<GitBranch className="w-4 h-4" />} label="Branch" value={d.branch} />
+                <DetailRow icon={<Hash className="w-4 h-4" />} label="Commit" value={shortSha(d.commitSha)} />
+                <div className="rounded-lg border border-border bg-surface/50 p-3 text-sm">
+                  <div className="text-white break-words">{commitTitle(d.commitMessage)}</div>
+                  <div className="mt-1 text-xs text-textMuted">
+                    {d.commitAuthorName || 'Unknown author'}
+                    {d.commitAuthorDate ? ` • ${new Date(d.commitAuthorDate).toLocaleString()}` : ''}
+                  </div>
+                  {d.commitUrl && (
+                    <a
+                      href={d.commitUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="mt-2 inline-flex items-center gap-1 text-xs text-info hover:text-info/80"
+                    >
+                      View commit <ExternalLink className="w-3 h-3" />
+                    </a>
+                  )}
+                </div>
               </div>
 
               <div className="h-px bg-border/50 w-full" />

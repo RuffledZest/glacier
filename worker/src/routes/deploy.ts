@@ -26,6 +26,7 @@ import type { Deployment, DeployResult } from '../types'
 import { detectFromGithubApi } from '../auto-detect'
 import { resolveMainnetEpochs, resolveTestnetEpochs } from '../epochs'
 import { coerceRelativeOutputDir } from '../output-dir'
+import { getCommit, isCommitReachableFromRef, type GithubCommit } from '../github-api'
 import {
   MAX_PROJECT_SECRETS,
   decryptProjectSecret,
@@ -43,6 +44,78 @@ type ContainerDeployState = {
   phase?: 'build' | 'deploy'
   error?: string
   deployResult?: Omit<DeployResult, 'logs'>
+}
+
+type DeploymentCommitFields = Pick<
+  Deployment,
+  'commitSha' | 'commitRef' | 'commitMessage' | 'commitAuthorName' | 'commitAuthorDate' | 'commitUrl'
+>
+
+const ACTIVE_DEPLOYMENT_STATUSES = new Set(['queued', 'building', 'built', 'deploying'])
+
+function parseGithubRepoUrl(repoUrl: string): { owner: string; repo: string } | null {
+  try {
+    const url = new URL(repoUrl.replace(/\.git$/, ''))
+    if (url.hostname !== 'github.com') return null
+    const [owner, repo] = url.pathname.replace(/^\/+/, '').split('/')
+    if (!owner || !repo) return null
+    return { owner, repo }
+  } catch {
+    return null
+  }
+}
+
+function mapGithubCommit(commit: GithubCommit, commitRef: string): DeploymentCommitFields {
+  return {
+    commitSha: commit.sha,
+    commitRef,
+    commitMessage: commit.message || null,
+    commitAuthorName: commit.authorName,
+    commitAuthorDate: commit.authorDate,
+    commitUrl: commit.htmlUrl,
+  }
+}
+
+async function getGithubTokenForUser(db: D1Database, userAddress: string, env: Env): Promise<string | null> {
+  const row = await db
+    .prepare('SELECT access_token FROM github_tokens WHERE user_address = ?1')
+    .bind(userAddress)
+    .first<{ access_token: string }>()
+  return row?.access_token || env.GITHUB_TOKEN || null
+}
+
+async function resolveDeploymentCommit(
+  env: Env,
+  db: D1Database,
+  userAddress: string,
+  repoUrl: string,
+  branch: string,
+  requestedSha?: string | null,
+): Promise<{ ok: true; commit: DeploymentCommitFields } | { ok: false; error: string; status?: 400 | 401 | 500 }> {
+  const parsed = parseGithubRepoUrl(repoUrl)
+  if (!parsed) return { ok: false, error: 'invalid GitHub repository URL', status: 400 }
+
+  const token = await getGithubTokenForUser(db, userAddress, env)
+  if (!token) return { ok: false, error: 'GitHub not connected', status: 401 }
+
+  const ref = requestedSha?.trim() || branch
+  if (requestedSha && !/^[0-9a-f]{7,40}$/i.test(requestedSha.trim())) {
+    return { ok: false, error: 'commitSha must be a Git commit SHA', status: 400 }
+  }
+
+  const commit = await getCommit(token, parsed.owner, parsed.repo, ref)
+  if (!commit) {
+    return { ok: false, error: requestedSha ? 'commit not found' : 'branch head commit not found', status: 400 }
+  }
+
+  if (requestedSha) {
+    const reachable = await isCommitReachableFromRef(token, parsed.owner, parsed.repo, commit.sha, branch)
+    if (!reachable) {
+      return { ok: false, error: `commit is not reachable from branch ${branch}`, status: 400 }
+    }
+  }
+
+  return { ok: true, commit: mapGithubCommit(commit, requestedSha?.trim() || branch) }
 }
 
 function preferLatestLogs(currentLogs: string, containerLogs: string): string {
@@ -191,6 +264,7 @@ router.post('/deploy', async (c) => {
 
   const body = await c.req.json<DeployRequest>()
   const { repoUrl, branch = 'main', network = 'testnet' } = body
+  const requestedCommitSha = body.commitSha?.trim() || undefined
 
   if (!repoUrl) {
     return c.json({ error: 'repoUrl is required' }, 400)
@@ -219,7 +293,7 @@ router.post('/deploy', async (c) => {
   let outputDir = body.outputDir
   let framework: string | undefined
 
-  if (!installCommand || !buildCommand || !outputDir) {
+  if (!requestedCommitSha && (!installCommand || !buildCommand || !outputDir)) {
     try {
       const detected = await detectFromGithubApi(repoUrl, branch)
       if (detected) {
@@ -237,6 +311,10 @@ router.post('/deploy', async (c) => {
   const normalizedOutputDir = coerceRelativeOutputDir(outputDir ?? null, baseDir) ?? outputDir ?? null
 
   const userAddress = payload.address as string
+  const resolvedCommit = await resolveDeploymentCommit(c.env, db, userAddress, repoUrl, branch, requestedCommitSha)
+  if (!resolvedCommit.ok) {
+    return c.json({ error: resolvedCommit.error }, resolvedCommit.status || 500)
+  }
 
   // Upsert project with build config
   const projectId = await upsertProject(db, {
@@ -263,6 +341,7 @@ router.post('/deploy', async (c) => {
     userAddress,
     repoUrl,
     branch,
+    ...resolvedCommit.commit,
     baseDir,
     installCommand: installCommand || null,
     buildCommand: buildCommand || null,
@@ -285,6 +364,7 @@ router.post('/deploy', async (c) => {
       projectId,
       repoUrl,
       branch,
+      resolvedCommit.commit.commitSha || undefined,
       baseDir,
       installCommand,
       buildCommand,
@@ -363,32 +443,56 @@ router.post('/deployments/:id/retry', async (c) => {
     return c.json({ error: 'only failed deployments can be retried' }, 400)
   }
 
-  // Get project config (latest) for retry
+  // Use the original deployment config for reproducible retry semantics.
   const project = await getProjectByRepo(db, payload.address as string, deployment.repoUrl)
 
   const retryId = crypto.randomUUID()
 
-  const retryConfig = project || deployment
-  const retryBase = retryConfig.baseDir || '.'
+  const retryBase = deployment.baseDir || '.'
   const safeOutputDir =
-    coerceRelativeOutputDir(retryConfig.outputDir, retryBase) ??
+    coerceRelativeOutputDir(deployment.outputDir, retryBase) ??
     coerceRelativeOutputDir(deployment.outputDir, deployment.baseDir || '.') ??
     'dist'
 
   const retryEpochs =
     deployment.epochs ??
     (deployment.network === 'mainnet' ? 2 : resolveTestnetEpochs(undefined))
+  const commit =
+    deployment.commitSha
+      ? {
+          commitSha: deployment.commitSha,
+          commitRef: deployment.commitRef,
+          commitMessage: deployment.commitMessage,
+          commitAuthorName: deployment.commitAuthorName,
+          commitAuthorDate: deployment.commitAuthorDate,
+          commitUrl: deployment.commitUrl,
+        }
+      : await resolveDeploymentCommit(
+          c.env,
+          db,
+          payload.address as string,
+          deployment.repoUrl,
+          deployment.branch,
+          undefined,
+        )
+
+  if ('ok' in commit && !commit.ok) {
+    return c.json({ error: commit.error }, commit.status || 500)
+  }
+
+  const commitFields = 'ok' in commit ? commit.commit : commit
 
   await createDeployment(db, {
     id: retryId,
     userAddress: payload.address as string,
     repoUrl: deployment.repoUrl,
-    branch: retryConfig.branch,
-    baseDir: retryConfig.baseDir,
-    installCommand: retryConfig.installCommand,
-    buildCommand: retryConfig.buildCommand,
+    branch: deployment.branch,
+    ...commitFields,
+    baseDir: deployment.baseDir,
+    installCommand: deployment.installCommand,
+    buildCommand: deployment.buildCommand,
     outputDir: safeOutputDir,
-    network: retryConfig.network,
+    network: deployment.network,
     epochs: retryEpochs,
     status: 'queued',
     error: null,
@@ -405,10 +509,11 @@ router.post('/deployments/:id/retry', async (c) => {
       payload.address as string,
       project?.id,
       deployment.repoUrl,
-      retryConfig.branch,
-      retryConfig.baseDir || '.',
-      retryConfig.installCommand || undefined,
-      retryConfig.buildCommand || undefined,
+      deployment.branch,
+      commitFields.commitSha || undefined,
+      deployment.baseDir || '.',
+      deployment.installCommand || undefined,
+      deployment.buildCommand || undefined,
       safeOutputDir,
       deployment.network,
       retryEpochs,
@@ -417,6 +522,107 @@ router.post('/deployments/:id/retry', async (c) => {
   )
 
   return c.json({ id: retryId, status: 'queued' }, 202)
+})
+
+router.post('/deployments/:id/redeploy', async (c) => {
+  const db = getDb(c)
+
+  const authHeader = c.req.header('Authorization')
+  if (!authHeader?.startsWith('Bearer ')) {
+    return c.json({ error: 'missing authorization header' }, 401)
+  }
+
+  const token = authHeader.slice(7)
+  const payload = await verifyJwt(token, c.env.JWT_SECRET)
+  if (!payload) {
+    return c.json({ error: 'invalid or expired token' }, 401)
+  }
+
+  const id = c.req.param('id')
+  const deployment = await getDeployment(db, id)
+
+  if (!deployment) {
+    return c.json({ error: 'deployment not found' }, 404)
+  }
+
+  const userAddress = payload.address as string
+  if (deployment.userAddress !== userAddress) {
+    return c.json({ error: 'not authorized' }, 403)
+  }
+
+  if (ACTIVE_DEPLOYMENT_STATUSES.has(deployment.status)) {
+    return c.json({ error: 'active deployments cannot be redeployed' }, 400)
+  }
+
+  if (deployment.status === 'deleted') {
+    return c.json({ error: 'deleted deployments cannot be redeployed' }, 400)
+  }
+
+  const project = await getProjectByRepo(db, userAddress, deployment.repoUrl)
+  const redeployId = crypto.randomUUID()
+  const redeployBase = deployment.baseDir || '.'
+  const safeOutputDir = coerceRelativeOutputDir(deployment.outputDir, redeployBase) ?? deployment.outputDir ?? 'dist'
+  const redeployEpochs =
+    deployment.epochs ??
+    (deployment.network === 'mainnet' ? 2 : resolveTestnetEpochs(undefined))
+  const commit =
+    deployment.commitSha
+      ? {
+          commitSha: deployment.commitSha,
+          commitRef: deployment.commitRef,
+          commitMessage: deployment.commitMessage,
+          commitAuthorName: deployment.commitAuthorName,
+          commitAuthorDate: deployment.commitAuthorDate,
+          commitUrl: deployment.commitUrl,
+        }
+      : await resolveDeploymentCommit(c.env, db, userAddress, deployment.repoUrl, deployment.branch, undefined)
+
+  if ('ok' in commit && !commit.ok) {
+    return c.json({ error: commit.error }, commit.status || 500)
+  }
+
+  const commitFields = 'ok' in commit ? commit.commit : commit
+
+  await createDeployment(db, {
+    id: redeployId,
+    userAddress,
+    repoUrl: deployment.repoUrl,
+    branch: deployment.branch,
+    ...commitFields,
+    baseDir: deployment.baseDir,
+    installCommand: deployment.installCommand,
+    buildCommand: deployment.buildCommand,
+    outputDir: safeOutputDir,
+    network: deployment.network,
+    epochs: redeployEpochs,
+    status: 'queued',
+    error: null,
+    objectId: null,
+    base36Url: null,
+    logs: '',
+  })
+
+  c.executionCtx.waitUntil(
+    runBuildAndDeploy(
+      c.env,
+      db,
+      redeployId,
+      userAddress,
+      project?.id,
+      deployment.repoUrl,
+      deployment.branch,
+      commitFields.commitSha || undefined,
+      deployment.baseDir || '.',
+      deployment.installCommand || undefined,
+      deployment.buildCommand || undefined,
+      safeOutputDir,
+      deployment.network,
+      redeployEpochs,
+      undefined
+    )
+  )
+
+  return c.json({ id: redeployId, status: 'queued' }, 202)
 })
 
 // GET /api/deployments/:id/logs — SSE live log stream
@@ -530,6 +736,85 @@ router.get('/projects', async (c) => {
 
   const projects = await getProjects(db, payload.address as string)
   return c.json({ projects })
+})
+
+router.post('/projects/:id/deploy-latest', async (c) => {
+  const db = getDb(c)
+
+  const authHeader = c.req.header('Authorization')
+  if (!authHeader?.startsWith('Bearer ')) {
+    return c.json({ error: 'missing authorization header' }, 401)
+  }
+
+  const token = authHeader.slice(7)
+  const payload = await verifyJwt(token, c.env.JWT_SECRET)
+  if (!payload) {
+    return c.json({ error: 'invalid or expired token' }, 401)
+  }
+
+  const userAddress = payload.address as string
+  const project = await getProject(db, c.req.param('id'))
+  if (!project || project.userAddress !== userAddress) {
+    return c.json({ error: 'project not found' }, 404)
+  }
+
+  const resolvedCommit = await resolveDeploymentCommit(
+    c.env,
+    db,
+    userAddress,
+    project.repoUrl,
+    project.branch,
+    undefined,
+  )
+  if (!resolvedCommit.ok) {
+    return c.json({ error: resolvedCommit.error }, resolvedCommit.status || 500)
+  }
+
+  const deploymentId = crypto.randomUUID()
+  const baseDir = project.baseDir || '.'
+  const outputDir = coerceRelativeOutputDir(project.outputDir, baseDir) ?? project.outputDir ?? 'dist'
+  const epochs = project.network === 'mainnet' ? 2 : resolveTestnetEpochs(undefined)
+
+  await createDeployment(db, {
+    id: deploymentId,
+    userAddress,
+    repoUrl: project.repoUrl,
+    branch: project.branch,
+    ...resolvedCommit.commit,
+    baseDir: project.baseDir,
+    installCommand: project.installCommand,
+    buildCommand: project.buildCommand,
+    outputDir,
+    network: project.network,
+    epochs,
+    status: 'queued',
+    error: null,
+    objectId: null,
+    base36Url: null,
+    logs: '',
+  })
+
+  c.executionCtx.waitUntil(
+    runBuildAndDeploy(
+      c.env,
+      db,
+      deploymentId,
+      userAddress,
+      project.id,
+      project.repoUrl,
+      project.branch,
+      resolvedCommit.commit.commitSha || undefined,
+      project.baseDir || '.',
+      project.installCommand || undefined,
+      project.buildCommand || undefined,
+      outputDir,
+      project.network,
+      epochs,
+      undefined
+    )
+  )
+
+  return c.json({ id: deploymentId, status: 'queued' }, 202)
 })
 
 router.get('/projects/:id', async (c) => {
@@ -753,6 +1038,7 @@ async function runBuildAndDeploy(
   projectId: string | undefined,
   repoUrl: string,
   branch: string,
+  commitSha: string | undefined,
   baseDir: string,
   installCommand: string | undefined,
   buildCommand: string | undefined,
@@ -767,6 +1053,7 @@ async function runBuildAndDeploy(
     const effectiveOutputDir =
       coerceRelativeOutputDir(outputDir ?? null, baseDir || '.') ?? outputDir
     const projectEnv = await loadProjectBuildEnv(env, db, projectId, userAddress)
+    const githubToken = await getGithubTokenForUser(db, userAddress, env)
 
     const container = getContainer(env.BUILD_CONTAINER, deploymentId)
 
@@ -779,11 +1066,12 @@ async function runBuildAndDeploy(
     const buildReq: BuildRequest = {
       repoUrl,
       branch,
+      commitSha,
       baseDir,
       installCommand,
       buildCommand,
       outputDir: effectiveOutputDir,
-      githubToken: env.GITHUB_TOKEN || undefined,
+      githubToken: githubToken || undefined,
       buildId: deploymentId,
       env: projectEnv,
     }

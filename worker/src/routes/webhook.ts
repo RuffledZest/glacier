@@ -89,6 +89,8 @@ router.post('/github', async (c) => {
   const repoUrl = payload.repository?.clone_url || payload.repository?.html_url
   const branch = (payload.ref as string)?.replace('refs/heads/', '') || 'main'
   const defaultBranch = payload.repository?.default_branch || 'main'
+  const commitSha = typeof payload.after === 'string' && !/^0+$/.test(payload.after) ? payload.after : null
+  const headCommit = payload.head_commit || null
 
   if (!repoUrl) {
     return c.json({ error: 'could not determine repository URL' }, 400)
@@ -96,6 +98,10 @@ router.post('/github', async (c) => {
 
   if (branch !== defaultBranch) {
     return c.json({ message: 'ignored push to non-default branch', branch, defaultBranch })
+  }
+
+  if (!commitSha) {
+    return c.json({ message: 'ignored push without a deployable commit' })
   }
 
   // Find user who owns this webhook by repo URL
@@ -147,6 +153,12 @@ router.post('/github', async (c) => {
     userAddress,
     repoUrl,
     branch,
+    commitSha,
+    commitRef: branch,
+    commitMessage: typeof headCommit?.message === 'string' ? headCommit.message : null,
+    commitAuthorName: headCommit?.author?.name || headCommit?.committer?.name || null,
+    commitAuthorDate: typeof headCommit?.timestamp === 'string' ? headCommit.timestamp : null,
+    commitUrl: typeof headCommit?.url === 'string' ? headCommit.url : null,
     baseDir,
     installCommand: installCommand || null,
     buildCommand: buildCommand || null,
@@ -176,15 +188,21 @@ router.post('/github', async (c) => {
         for (const record of secretRecords) {
           projectEnv[record.name] = await decryptProjectSecret(env, record)
         }
+        const tokenRow = await db
+          .prepare('SELECT access_token FROM github_tokens WHERE user_address = ?1')
+          .bind(userAddress)
+          .first<{ access_token: string }>()
+        const githubToken = tokenRow?.access_token || env.GITHUB_TOKEN || undefined
 
         const buildReq: BuildRequest = {
           repoUrl,
           branch,
+          commitSha,
           baseDir,
           installCommand,
           buildCommand,
           outputDir,
-          githubToken: env.GITHUB_TOKEN || undefined,
+          githubToken,
           buildId: deploymentId,
           env: projectEnv,
         }

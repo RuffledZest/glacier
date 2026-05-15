@@ -28,6 +28,7 @@ router.post('/estimate', async (c) => {
 
   const body = await c.req.json<BuildRequest & { epochs?: number | 'max'; network?: 'mainnet' | 'testnet' }>()
   const { repoUrl, branch = 'main', network = 'testnet' } = body
+  const commitSha = body.commitSha?.trim() || undefined
   const userAddress = payload.address as string
 
   if (!repoUrl) return c.json({ error: 'repoUrl is required' }, 400)
@@ -47,7 +48,7 @@ router.post('/estimate', async (c) => {
   let buildCommand = body.buildCommand
   let outputDir = body.outputDir
 
-  if (!installCommand || !buildCommand || !outputDir) {
+  if (!commitSha && (!installCommand || !buildCommand || !outputDir)) {
     try {
       const detected = await detectFromGithubApi(repoUrl, branch)
       if (detected) {
@@ -97,15 +98,21 @@ router.post('/estimate', async (c) => {
     await container.startAndWaitForPorts({
       cancellationOptions: { portReadyTimeoutMS: 30000 },
     })
+    const tokenRow = await c.env.DB
+      .prepare('SELECT access_token FROM github_tokens WHERE user_address = ?1')
+      .bind(userAddress)
+      .first<{ access_token: string }>()
+    const githubToken = tokenRow?.access_token || c.env.GITHUB_TOKEN || undefined
 
     const buildReq: BuildRequest = {
       repoUrl,
       branch,
+      commitSha,
       baseDir,
       installCommand,
       buildCommand,
       outputDir,
-      githubToken: c.env.GITHUB_TOKEN || undefined,
+      githubToken,
       buildId: estimateId,
       env: projectEnv,
     }

@@ -1,20 +1,23 @@
 import { useEffect, useMemo, useState } from 'react'
-import { useParams, Link } from 'react-router-dom'
+import { useParams, Link, useNavigate } from 'react-router-dom'
 import { useAuth } from '../hooks/useAuth'
 import {
   getProject,
   deleteProject,
+  deployLatestProject,
   listProjects,
   listDeployments,
   listProjectSecrets,
   rotateProjectSecret,
   importProjectSecrets,
   deleteProjectSecret,
+  listRepoCommits,
   type Project,
   type Deployment,
   type ProjectSecret,
+  type GithubCommit,
 } from '../lib/api'
-import { decodeRepoUrl, repoDisplay, encodeRepoUrl } from '../lib/repos'
+import { decodeRepoUrl, repoDisplay, encodeRepoUrl, repoOwner, repoName as repoNameFromUrl } from '../lib/repos'
 import {
   approxWalStorageEndDate,
   walrusRetentionCalendarDays,
@@ -76,18 +79,36 @@ function parseSecretNames(content: string): string[] {
   return Array.from(new Set(names)).sort()
 }
 
+function shortSha(sha: string | null | undefined): string {
+  return sha ? sha.slice(0, 7) : 'unknown'
+}
+
+function commitTitle(message: string | null | undefined): string {
+  return (message || 'Unknown commit').split('\n')[0]
+}
+
+function countCommitsBehind(commits: GithubCommit[], commitSha: string | null | undefined): number | null {
+  if (!commitSha || commits.length === 0) return null
+  const index = commits.findIndex((commit) => commit.sha === commitSha)
+  return index > 0 ? index : null
+}
+
 type Tab = 'overview' | 'deployments' | 'secrets'
 
 export default function ProjectDetail() {
   const { encodedRepo } = useParams<{ encodedRepo: string }>()
   const { isAuthenticated } = useAuth()
+  const navigate = useNavigate()
   const [project, setProject] = useState<Project | null>(null)
   const [deployments, setDeployments] = useState<Deployment[]>([])
   const [secrets, setSecrets] = useState<ProjectSecret[]>([])
+  const [branchCommits, setBranchCommits] = useState<GithubCommit[]>([])
+  const [loadingBranchHead, setLoadingBranchHead] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [activeTab, setActiveTab] = useState<Tab>('overview')
   const [deleting, setDeleting] = useState(false)
+  const [deployingLatest, setDeployingLatest] = useState(false)
   const [hasProjectId, setHasProjectId] = useState(false)
   const [secretName, setSecretName] = useState('')
   const [secretValue, setSecretValue] = useState('')
@@ -173,6 +194,36 @@ export default function ProjectDetail() {
     load()
   }, [isAuthenticated, repoUrl])
 
+  useEffect(() => {
+    if (!isAuthenticated || !project || !hasProjectId) {
+      setBranchCommits([])
+      return
+    }
+
+    let cancelled = false
+    const currentProject = project
+    async function loadBranchHead() {
+      setLoadingBranchHead(true)
+      try {
+        const owner = repoOwner(currentProject.repoUrl)
+        const name = repoNameFromUrl(currentProject.repoUrl)
+        if (!owner || !name) {
+          if (!cancelled) setBranchCommits([])
+          return
+        }
+        const commits = await listRepoCommits(owner, name, currentProject.branch)
+        if (!cancelled) setBranchCommits(commits)
+      } catch {
+        if (!cancelled) setBranchCommits([])
+      } finally {
+        if (!cancelled) setLoadingBranchHead(false)
+      }
+    }
+
+    void loadBranchHead()
+    return () => { cancelled = true }
+  }, [isAuthenticated, project, hasProjectId])
+
   async function handleDelete() {
     if (!project || !hasProjectId || !confirm('Delete this project and all its deployments? This cannot be undone.')) return
     setDeleting(true)
@@ -182,6 +233,18 @@ export default function ProjectDetail() {
     } catch (err) {
       alert(err instanceof Error ? err.message : 'Delete failed')
       setDeleting(false)
+    }
+  }
+
+  async function handleDeployLatest() {
+    if (!project || !hasProjectId) return
+    setDeployingLatest(true)
+    try {
+      const { id } = await deployLatestProject(project.id)
+      navigate(`/deployments/${id}`)
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Deploy latest failed')
+      setDeployingLatest(false)
     }
   }
 
@@ -282,6 +345,11 @@ export default function ProjectDetail() {
 
   const latest = deployments[0]
   const latestStatus = latest ? STATUS[latest.status] || STATUS.queued : null
+  const branchHead = branchCommits[0] || null
+  const hasActiveDeployment = deployments.some((d) => ['queued', 'building', 'built', 'deploying'].includes(d.status))
+  const knownLatestMismatch = !!(latest?.commitSha && branchHead?.sha && latest.commitSha !== branchHead.sha)
+  const commitsBehind = countCommitsBehind(branchCommits, latest?.commitSha)
+  const showUpdateDeployment = hasProjectId && !!latest && !hasActiveDeployment && knownLatestMismatch
   const liveDeployment = deployments.find(
     (d) => d.status === 'deployed' && (d.base36Url || d.objectId),
   )
@@ -363,6 +431,12 @@ export default function ProjectDetail() {
               {latestStatus.icon} {latestStatus.label}
             </Badge>
           )}
+          {showUpdateDeployment && (
+            <Button variant="primary" onClick={handleDeployLatest} disabled={deployingLatest} size="sm">
+              {deployingLatest ? <Spinner className="mr-2" /> : <RefreshCcw className="w-4 h-4 mr-2" />}
+              {deployingLatest ? 'Deploying...' : 'Update Deployment'}
+            </Button>
+          )}
           {hasProjectId && (
             <Button variant="danger" onClick={handleDelete} disabled={deleting} size="sm">
               {deleting ? <Spinner className="mr-2" /> : <Trash2 className="w-4 h-4 mr-2" />}
@@ -385,9 +459,44 @@ export default function ProjectDetail() {
 
             <div className="flex items-center gap-4 text-sm text-textMuted mb-4">
               <span className="flex items-center gap-1.5"><GitBranch className="w-4 h-4" /> {latest.branch}</span>
+              <span className="flex items-center gap-1.5" title={latest.commitMessage || undefined}>
+                <Hash className="w-4 h-4" /> {shortSha(latest.commitSha)}
+              </span>
               <span className="flex items-center gap-1.5"><Globe className="w-4 h-4" /> {latest.network === 'testnet' ? 'Testnet' : 'Mainnet'}</span>
               <span className="flex items-center gap-1.5"><Calendar className="w-4 h-4" /> {new Date(latest.createdAt).toLocaleString()}</span>
             </div>
+
+            {showUpdateDeployment && (
+              <div className="mb-4 rounded-xl border border-warning/30 bg-warning/10 p-4">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="min-w-0">
+                    <div className="text-sm font-semibold text-warning">
+                      New commit available{commitsBehind ? ` (${commitsBehind} commit${commitsBehind === 1 ? '' : 's'} behind)` : ''}
+                    </div>
+                    <div className="mt-1 flex items-center gap-2 text-xs text-textMuted">
+                      <span className="font-mono text-info">{shortSha(branchHead?.sha)}</span>
+                      <span className="truncate">{commitTitle(branchHead?.message)}</span>
+                    </div>
+                  </div>
+                  <Button variant="primary" onClick={handleDeployLatest} disabled={deployingLatest} size="sm" className="shrink-0">
+                    {deployingLatest ? <Spinner className="mr-2" /> : <RefreshCcw className="w-4 h-4 mr-2" />}
+                    {deployingLatest ? 'Deploying...' : 'Update Deployment'}
+                  </Button>
+                </div>
+              </div>
+            )}
+
+            {!showUpdateDeployment && latest.commitSha && branchHead?.sha === latest.commitSha && !hasActiveDeployment && (
+              <div className="mb-4 rounded-lg border border-success/20 bg-success/5 px-3 py-2 text-xs text-success">
+                Latest deployment matches {project.branch} at {shortSha(branchHead.sha)}.
+              </div>
+            )}
+
+            {!showUpdateDeployment && !latest.commitSha && !hasActiveDeployment && (
+              <div className="mb-4 rounded-lg border border-border bg-surface/50 px-3 py-2 text-xs text-textMuted">
+                This deployment predates commit tracking. {loadingBranchHead ? 'Checking the latest repository commit...' : 'Deploy latest to start tracking exact commits.'}
+              </div>
+            )}
 
             {latest.status === 'deployed' && latest.base36Url && (
               <div className="bg-success/10 border border-success/30 rounded-xl p-4">
@@ -521,6 +630,9 @@ export default function ProjectDetail() {
                       <div className="flex items-center gap-4 text-xs font-medium text-textMuted">
                         <div className="flex items-center gap-1.5">
                           <GitBranch className="w-3.5 h-3.5" /> {d.branch}
+                        </div>
+                        <div className="flex items-center gap-1.5" title={commitTitle(d.commitMessage)}>
+                          <Hash className="w-3.5 h-3.5" /> {shortSha(d.commitSha)}
                         </div>
                         <div className="flex items-center gap-1.5">
                           <Globe className="w-3.5 h-3.5" /> {d.network === 'testnet' ? 'Testnet' : 'Mainnet'}

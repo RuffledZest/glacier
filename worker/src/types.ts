@@ -10,6 +10,8 @@ export interface BuildConfig {
 export interface DeployRequest {
   repoUrl: string
   branch?: string
+  /** Optional commit SHA to deploy. When omitted, the branch HEAD is resolved at deploy creation. */
+  commitSha?: string
   network?: 'mainnet' | 'testnet'
   baseDir?: string
   installCommand?: string
@@ -41,6 +43,14 @@ export interface Deployment {
   userAddress: string
   repoUrl: string
   branch: string
+  /** Exact Git commit built for this deployment; null for legacy rows. */
+  commitSha: string | null
+  /** User-selected ref that resolved to commitSha, typically a branch name or pasted SHA. */
+  commitRef: string | null
+  commitMessage: string | null
+  commitAuthorName: string | null
+  commitAuthorDate: string | null
+  commitUrl: string | null
   baseDir: string
   installCommand: string | null
   buildCommand: string | null
@@ -60,6 +70,8 @@ export interface Deployment {
 export interface BuildRequest {
   repoUrl: string
   branch: string
+  /** Exact commit to checkout after fetching the branch. */
+  commitSha?: string
   baseDir?: string
   installCommand?: string
   buildCommand?: string

@@ -5,7 +5,7 @@ import { listDeployments, type Deployment } from '../lib/api'
 import { encodeRepoUrl, repoDisplay } from '../lib/repos'
 import { Button } from '../components/ui/Button'
 import { Badge } from '../components/ui/Badge'
-import { Plus, Box, GitBranch, Globe, Clock, Loader2, AlertCircle, ExternalLink, CheckCircle2, XCircle } from 'lucide-react'
+import { Plus, Box, GitBranch, Globe, Clock, Loader2, AlertCircle, ExternalLink, CheckCircle2, XCircle, Hash } from 'lucide-react'
 
 function GithubIcon({ className }: { className?: string }) {
   return (
@@ -23,6 +23,10 @@ const STATUS: Record<string, { color: 'success' | 'warning' | 'danger' | 'info' 
   deploying: { color: 'warning', label: 'Deploying', icon: <Loader2 className="w-3 h-3 animate-spin" /> },
   deployed:  { color: 'success', label: 'Live', icon: <CheckCircle2 className="w-3 h-3" /> },
   failed:    { color: 'danger', label: 'Failed', icon: <XCircle className="w-3 h-3" /> },
+}
+
+function shortSha(sha: string | null | undefined): string {
+  return sha ? sha.slice(0, 7) : 'unknown'
 }
 
 interface Project {
@@ -153,6 +157,10 @@ export default function Dashboard() {
                           <div className="flex items-center gap-1.5">
                             <GitBranch className="w-3.5 h-3.5" />
                             {latest.branch}
+                          </div>
+                          <div className="flex items-center gap-1.5" title={latest.commitMessage || undefined}>
+                            <Hash className="w-3.5 h-3.5" />
+                            {shortSha(latest.commitSha)}
                           </div>
                           <div className="flex items-center gap-1.5">
                             <Globe className="w-3.5 h-3.5" />
