@@ -33,3 +33,25 @@ export function activeRetentionDays(network: 'mainnet' | 'testnet', mainnetTierI
   }
   return Math.max(1, Math.min(7, testnetDays)) * TESTNET_DAYS_PER_EPOCH
 }
+
+/** Calendar days from epoch count (same model as cost/deploy). */
+export function walrusRetentionCalendarDays(network: 'mainnet' | 'testnet', epochs: number): number {
+  if (network === 'mainnet') return epochs * MAINNET_DAYS_PER_EPOCH
+  return Math.max(1, Math.min(7, epochs)) * TESTNET_DAYS_PER_EPOCH
+}
+
+/** End-of-retention instant = deploy time + calendar-day estimate (Walrus uses chain epochs; this is UX-only). */
+export function approxWalStorageEndDate(
+  deployedAtIso: string,
+  network: 'mainnet' | 'testnet',
+  epochs: number | null | undefined,
+): Date {
+  const e =
+    epochs != null && Number.isFinite(epochs) && epochs > 0
+      ? epochs
+      : network === 'mainnet'
+        ? 2
+        : 1
+  const days = walrusRetentionCalendarDays(network, e)
+  return new Date(new Date(deployedAtIso).getTime() + days * 86_400_000)
+}

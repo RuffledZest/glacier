@@ -81,7 +81,10 @@ export async function deleteProject(id: string): Promise<void> {
 export interface Deployment {
   id: string; userAddress: string; repoUrl: string; branch: string; baseDir: string
   installCommand: string | null; buildCommand: string | null; outputDir: string | null
-  network: 'mainnet' | 'testnet'; status: string; error: string | null
+  network: 'mainnet' | 'testnet'
+  /** Walrus storage epochs; null on older deployments */
+  epochs: number | null
+  status: string; error: string | null
   objectId: string | null; base36Url: string | null; logs: string
   createdAt: string; updatedAt: string
 }

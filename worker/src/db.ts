@@ -138,8 +138,8 @@ export async function createDeployment(
   await db
     .prepare(
       `INSERT INTO deployments
-       (id, user_address, repo_url, branch, base_dir, install_command, build_command, output_dir, network, status, logs)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)`
+       (id, user_address, repo_url, branch, base_dir, install_command, build_command, output_dir, network, epochs, status, logs)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)`
     )
     .bind(
       deployment.id,
@@ -151,6 +151,7 @@ export async function createDeployment(
       deployment.buildCommand ?? null,
       deployment.outputDir ?? null,
       deployment.network,
+      deployment.epochs ?? null,
       deployment.status,
       deployment.logs
     )
@@ -168,10 +169,10 @@ export async function touchDeployment(db: D1Database, id: string): Promise<void>
 export async function updateDeployment(
   db: D1Database,
   id: string,
-  updates: Partial<Pick<Deployment, 'status' | 'logs' | 'objectId' | 'base36Url' | 'error' | 'outputDir'>>
+  updates: Partial<Pick<Deployment, 'status' | 'logs' | 'objectId' | 'base36Url' | 'error' | 'outputDir' | 'epochs'>>
 ): Promise<void> {
   const sets: string[] = ['updated_at = datetime(\'now\')']
-  const values: (string | null)[] = []
+  const values: (string | number | null)[] = []
 
   if (updates.status !== undefined) {
     sets.push('status = ?')
@@ -196,6 +197,10 @@ export async function updateDeployment(
   if (updates.outputDir !== undefined) {
     sets.push('output_dir = ?')
     values.push(updates.outputDir)
+  }
+  if (updates.epochs !== undefined) {
+    sets.push('epochs = ?')
+    values.push(updates.epochs)
   }
 
   values.push(id)
@@ -247,6 +252,14 @@ export async function getDeploymentsByRepo(
 }
 
 function mapRow(row: Record<string, unknown>): Deployment {
+  const epochsRaw = row.epochs
+  const epochs =
+    typeof epochsRaw === 'number' && Number.isFinite(epochsRaw)
+      ? epochsRaw
+      : typeof epochsRaw === 'string' && epochsRaw !== '' && Number.isFinite(Number(epochsRaw))
+        ? Number(epochsRaw)
+        : null
+
   return {
     id: row.id as string,
     userAddress: row.user_address as string,
@@ -257,6 +270,7 @@ function mapRow(row: Record<string, unknown>): Deployment {
     buildCommand: row.build_command as string | null,
     outputDir: row.output_dir as string | null,
     network: row.network as 'mainnet' | 'testnet',
+    epochs,
     status: row.status as Deployment['status'],
     error: row.error as string | null,
     objectId: row.object_id as string | null,

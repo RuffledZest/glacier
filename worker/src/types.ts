@@ -44,6 +44,8 @@ export interface Deployment {
   buildCommand: string | null
   outputDir: string | null
   network: 'mainnet' | 'testnet'
+  /** Walrus storage epochs for this deploy; null on rows before migration or legacy data */
+  epochs: number | null
   status: 'queued' | 'building' | 'built' | 'deploying' | 'deployed' | 'failed' | 'deleted'
   error: string | null
   objectId: string | null

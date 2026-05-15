@@ -109,6 +109,7 @@ router.post('/deploy', async (c) => {
     buildCommand: buildCommand || null,
     outputDir: normalizedOutputDir,
     network,
+    epochs,
     status: 'queued',
     error: null,
     objectId: null,
@@ -211,6 +212,10 @@ router.post('/deployments/:id/retry', async (c) => {
     coerceRelativeOutputDir(deployment.outputDir, deployment.baseDir || '.') ??
     'dist'
 
+  const retryEpochs =
+    deployment.epochs ??
+    (deployment.network === 'mainnet' ? 2 : resolveTestnetEpochs(undefined))
+
   await createDeployment(db, {
     id: retryId,
     userAddress: payload.address as string,
@@ -221,6 +226,7 @@ router.post('/deployments/:id/retry', async (c) => {
     buildCommand: retryConfig.buildCommand,
     outputDir: safeOutputDir,
     network: retryConfig.network,
+    epochs: retryEpochs,
     status: 'queued',
     error: null,
     objectId: null,
@@ -240,7 +246,7 @@ router.post('/deployments/:id/retry', async (c) => {
       retryConfig.buildCommand || undefined,
       safeOutputDir,
       deployment.network,
-      deployment.network === 'mainnet' ? 2 : 1,
+      retryEpochs,
       undefined
     )
   )
@@ -701,6 +707,7 @@ async function runBuildAndDeploy(
       objectId: deployResult.objectId || null,
       base36Url: deployResult.base36Url || null,
       logs: combinedLogs,
+      epochs,
     })
   } catch (err) {
     const errorMessage = err instanceof Error ? err.message : 'unknown error'

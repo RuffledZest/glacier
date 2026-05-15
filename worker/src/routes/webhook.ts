@@ -5,8 +5,29 @@ import { timedContainerFetch } from '../container-fetch'
 import { createDeployment, updateDeployment, touchDeployment, getDeployment, getDb, upsertProject } from '../db'
 import type { BuildRequest, DeployCommand } from '../types'
 import { detectFromGithubApi } from '../auto-detect'
+import { resolveMainnetEpochs, resolveTestnetEpochs } from '../epochs'
 
 const router = new Hono<{ Bindings: Env }>()
+
+function deploymentEpochsFromWorkerEnv(network: 'mainnet' | 'testnet', raw: string | undefined): number {
+  const s = (raw ?? '').trim()
+  if (network === 'mainnet') {
+    if (s.toLowerCase() === 'max') {
+      const r = resolveMainnetEpochs('max')
+      return r.ok ? r.epochs : 26
+    }
+    if (s === '') {
+      const r = resolveMainnetEpochs(undefined)
+      return r.ok ? r.epochs : 2
+    }
+    const n = parseInt(s, 10)
+    const r = resolveMainnetEpochs(Number.isFinite(n) ? n : undefined)
+    return r.ok ? r.epochs : 2
+  }
+  if (s === '') return resolveTestnetEpochs(undefined)
+  const n = parseInt(s, 10)
+  return resolveTestnetEpochs(Number.isFinite(n) ? n : undefined)
+}
 
 async function verifySignature(payload: string, signature: string, secret: string): Promise<boolean> {
   try {
@@ -92,7 +113,8 @@ router.post('/github', async (c) => {
   let installCommand: string | undefined
   let buildCommand: string | undefined
   let outputDir: string | undefined
-  const network = (env.WALRUS_NETWORK as string) || 'mainnet'
+  const network = ((env.WALRUS_NETWORK as string) || 'mainnet') as 'mainnet' | 'testnet'
+  const webhookEpochs = deploymentEpochsFromWorkerEnv(network, env.WALRUS_EPOCHS)
 
   try {
     const detected = await detectFromGithubApi(repoUrl, branch)
@@ -134,6 +156,7 @@ router.post('/github', async (c) => {
     objectId: null,
     base36Url: null,
     logs: '',
+    epochs: webhookEpochs,
   })
 
   c.executionCtx.waitUntil(
@@ -238,6 +261,7 @@ router.post('/github', async (c) => {
         const deployCmd: DeployCommand = {
           distPath,
           network: network as 'mainnet' | 'testnet',
+          epochs: webhookEpochs,
           suiKeystore: (env.SUI_KEYSTORE as string) || '',
           suiAddress: (env.SUI_ADDRESS as string) || '',
           buildId: deploymentId,
@@ -294,6 +318,7 @@ router.post('/github', async (c) => {
           objectId: deployResult.objectId || null,
           base36Url: deployResult.base36Url || null,
           logs: combinedLogs,
+          epochs: webhookEpochs,
         })
       } catch (err) {
         const errorMessage = err instanceof Error ? err.message : 'unknown error'

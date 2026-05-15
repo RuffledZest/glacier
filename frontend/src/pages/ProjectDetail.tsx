@@ -3,6 +3,11 @@ import { useParams, Link } from 'react-router-dom'
 import { useAuth } from '../hooks/useAuth'
 import { getProject, deleteProject, listProjects, listDeployments, type Project, type Deployment } from '../lib/api'
 import { decodeRepoUrl, repoDisplay, encodeRepoUrl } from '../lib/repos'
+import {
+  approxWalStorageEndDate,
+  walrusRetentionCalendarDays,
+  MAINNET_DAYS_PER_EPOCH,
+} from '../lib/epochs'
 import { Button } from '../components/ui/Button'
 import { Card, CardHeader, CardTitle, CardContent } from '../components/ui/Card'
 import { Badge } from '../components/ui/Badge'
@@ -151,6 +156,51 @@ export default function ProjectDetail() {
 
   const latest = deployments[0]
   const latestStatus = latest ? STATUS[latest.status] || STATUS.queued : null
+  const liveDeployment = deployments.find(
+    (d) => d.status === 'deployed' && (d.base36Url || d.objectId),
+  )
+
+  let walrusRetentionOverview: React.ReactNode = null
+  if (liveDeployment) {
+    const effEpochs =
+      liveDeployment.epochs ?? (liveDeployment.network === 'mainnet' ? 2 : 1)
+    const end = approxWalStorageEndDate(
+      liveDeployment.createdAt,
+      liveDeployment.network,
+      liveDeployment.epochs,
+    )
+    const endLabel = end.toLocaleString(undefined, { dateStyle: 'full', timeStyle: 'short' })
+    const days = walrusRetentionCalendarDays(liveDeployment.network, effEpochs)
+    const est = liveDeployment.epochs == null
+    walrusRetentionOverview = (
+      <Card className="border-border">
+        <CardHeader className="pb-4 border-b border-border/50">
+          <CardTitle className="text-sm flex items-center gap-2 text-textMuted">
+            <Clock className="w-4 h-4" /> Walrus storage (approx.)
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="pt-4 space-y-2">
+          <p className="text-sm text-white leading-relaxed">
+            The live site is stored in Walrus for roughly{' '}
+            <span className="font-semibold text-info">{days} calendar days</span>
+            {liveDeployment.network === 'mainnet' ? (
+              <> (~{effEpochs} epochs × ~{MAINNET_DAYS_PER_EPOCH} days each)</>
+            ) : (
+              <> (~{effEpochs} epoch{effEpochs === 1 ? '' : 's'} × ~1 day each)</>
+            )}
+            {est ? ', estimated from defaults for older deploys.' : '.'}
+          </p>
+          <p className="text-sm text-textMuted">
+            That points to about{' '}
+            <span className="text-white font-medium">{endLabel}</span>
+            <span className="block mt-2 text-xs opacity-80">
+              Walrus follows Sui epochs; this is a calendar guide from your deploy time, not a guaranteed on-chain timestamp.
+            </span>
+          </p>
+        </CardContent>
+      </Card>
+    )
+  }
 
   return (
     <div className="max-w-5xl mx-auto space-y-6">
@@ -265,9 +315,10 @@ export default function ProjectDetail() {
 
       {/* Tab Content */}
       {activeTab === 'overview' ? (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          {/* Build Config */}
-          <Card>
+        <div className="space-y-6">
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            {/* Build Config */}
+            <Card>
             <CardHeader className="pb-4 border-b border-border/50">
               <CardTitle className="text-sm flex items-center gap-2 text-textMuted">
                 <Code2 className="w-4 h-4" /> Build Configuration
@@ -307,6 +358,9 @@ export default function ProjectDetail() {
               </CardContent>
             </Card>
           )}
+          </div>
+
+          {walrusRetentionOverview}
         </div>
       ) : (
         <div className="space-y-3">
