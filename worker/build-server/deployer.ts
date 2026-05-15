@@ -84,9 +84,11 @@ async function rpcCall<T>(url: string, method: string, params: unknown[]): Promi
 }
 
 /**
- * Site-builder `deploy` uses a Sui **gas budget** cap (default often 0.5 SUI). That is not Walrus
- * storage payment — storage is WAL. Smaller sites need a lower cap so modest SUI balances work.
- * See https://docs.wal.app/docs/sites/getting-started/using-the-site-builder (`--gas-budget`).
+ * Site-builder `deploy` reads a Sui **gas budget** cap from `gas_budget` under each context’s
+ * `general` section in `sites-config.yaml` (site-builder 2.9+; the old `--gas-budget` CLI flag
+ * is not accepted on `deploy`). That cap is not Walrus storage payment — storage is WAL.
+ * Smaller sites use a lower cap so modest SUI balances work.
+ * See https://docs.wal.app/docs/sites/getting-started/using-the-site-builder
  */
 function computeDeployGasBudgetMist(totalBytes: number): bigint {
   const MIN = 50_000_000n // 0.05 SUI floor
@@ -97,7 +99,7 @@ function computeDeployGasBudgetMist(totalBytes: number): bigint {
   return scaled > MAX ? MAX : scaled
 }
 
-/** Optional `WALRUS_GAS_BUDGET_MIST` env: integer MIST, roughly 1e6–1e9. */
+/** Optional `WALRUS_GAS_BUDGET_MIST` env: integer MIST, roughly 1e6–1e9; written into sites-config `gas_budget`. */
 function resolveGasBudgetMist(totalBytes: number): bigint {
   const raw = (process.env.WALRUS_GAS_BUDGET_MIST || '').trim()
   if (/^\d+$/.test(raw)) {
@@ -116,7 +118,7 @@ function assertSuiCoversGasBudget(
     return {
       ok: false,
       error:
-        `Insufficient SUI for the deploy transaction gas budget. Have ${sui} MIST (~${(Number(sui) / 1e9).toFixed(4)} SUI), need at least ${gasBudgetMist} MIST (~${(Number(gasBudgetMist) / 1e9).toFixed(4)} SUI) as site-builder --gas-budget. Walrus storage is paid in WAL; SUI is for Sui gas only. Fund ${suiAddress} or raise WALRUS_GAS_BUDGET_MIST if deploy fails with GasBudgetTooLow.`,
+        `Insufficient SUI for the deploy transaction gas budget. Have ${sui} MIST (~${(Number(sui) / 1e9).toFixed(4)} SUI), need at least ${gasBudgetMist} MIST (~${(Number(gasBudgetMist) / 1e9).toFixed(4)} SUI) per sites-config gas_budget. Walrus storage is paid in WAL; SUI is for Sui gas only. Fund ${suiAddress} or raise WALRUS_GAS_BUDGET_MIST if deploy fails with GasBudgetTooLow.`,
     }
   }
   return { ok: true }
@@ -286,7 +288,7 @@ async function ensureFunds(
 
   const MIN_SUI_FOR_GAS = 50_000_000n // 0.05 SUI — small headroom beyond gas budget (e.g. get-wal)
   const suiFloor = gasBudgetMist > MIN_SUI_FOR_GAS ? gasBudgetMist : MIN_SUI_FOR_GAS
-  logs.push(`Deploy gas budget cap (site-builder): ${gasBudgetMist} MIST (~${(Number(gasBudgetMist) / 1e9).toFixed(4)} SUI)`)
+  logs.push(`Deploy gas budget cap (sites-config gas_budget): ${gasBudgetMist} MIST (~${(Number(gasBudgetMist) / 1e9).toFixed(4)} SUI)`)
 
   // 4. Already sufficient?
   if (balances.wal >= requiredWal) {
@@ -501,6 +503,10 @@ export async function deployToWalrus(params: DeployParams): Promise<DeployResult
       /# walrus_config:.*/,
       `walrus_config: '${walrusConfigPath}'`
     )
+    sitesConfigContent = sitesConfigContent.replace(
+      /#\s*gas_budget:\s*\d+/g,
+      `gas_budget: ${gasBudgetMist}`,
+    )
     tempSitesConfig = `/tmp/sites-config-${network}.yaml`
     writeFileSync(tempSitesConfig, sitesConfigContent, { mode: 0o600 })
     log('Sites config prepared')
@@ -534,7 +540,6 @@ export async function deployToWalrus(params: DeployParams): Promise<DeployResult
       SUI_ADDRESS: suiAddress,
       SITE_BUILDER_BIN: siteBuilderBin,
       CI: 'true',
-      WALRUS_GAS_BUDGET_MIST: gasBudgetMist.toString(),
     }
 
     const { exitCode, stdout, stderr } = await runStreamed(cmd, deployEnv, params.logPath)
