@@ -52,6 +52,28 @@ const DANGEROUS_EXTENSIONS = new Set([
 
 const MAX_LOG_SIZE = 10 * 1024 * 1024 // 10MB cap on build log file
 
+/** Mirrors worker/src/output-dir.ts — keep in sync. */
+function coerceRelativeOutputDir(outputDir: string | null | undefined, baseDir: string): string | undefined {
+  if (outputDir == null) return undefined
+  const o = outputDir.trim().replace(/\\/g, '/')
+  if (o === '') return undefined
+  if (!o.startsWith('/')) return o
+  const marker = '/repo/'
+  const idx = o.indexOf(marker)
+  if (idx === -1) {
+    const parts = o.split('/').filter(Boolean)
+    return parts.length ? parts[parts.length - 1] : 'dist'
+  }
+  let rest = o.slice(idx + marker.length)
+  const base = baseDir === '.' ? '' : baseDir.replace(/^\/+|\/+$/g, '')
+  if (base && rest.startsWith(`${base}/`)) {
+    rest = rest.slice(base.length + 1)
+  } else if (base && rest === base) {
+    return 'dist'
+  }
+  return rest || 'dist'
+}
+
 function safeAppend(logPath: string, data: string): void {
   try {
     const current = statSync(logPath).size
@@ -231,7 +253,7 @@ async function runBuildAsync(params: BuildParams, buildDir: string, logPath: str
     // Detect config
     let installCommand = installOverride
     let buildCommand = buildOverride
-    let outputDir = outputOverride
+    let outputDir = coerceRelativeOutputDir(outputOverride ?? null, baseDir) ?? outputOverride
     let detectedFramework: string | undefined
 
     if (!installCommand || !buildCommand || !outputDir) {
@@ -268,11 +290,12 @@ async function runBuildAsync(params: BuildParams, buildDir: string, logPath: str
     }
     log('Build complete')
 
-    // Verify output
-    const distPath = join(workingDir, outputDir!)
+    // Verify output (coerce again in case outputDir was only filled by detector)
+    const outputRel = coerceRelativeOutputDir(outputDir ?? null, baseDir) ?? outputDir!
+    const distPath = join(workingDir, outputRel)
     if (!existsSync(distPath)) {
-      log(`Output directory not found: ${outputDir}`)
-      writeState(buildId, { status: 'error', error: `output directory not found: ${outputDir}` })
+      log(`Output directory not found: ${outputRel} (resolved from ${outputDir})`)
+      writeState(buildId, { status: 'error', error: `output directory not found: ${outputRel}` })
       return
     }
 
@@ -297,7 +320,7 @@ async function runBuildAsync(params: BuildParams, buildDir: string, logPath: str
         packageManager: detectPackageManager(workingDir),
         installCommand: installCommand!,
         buildCommand: buildCommand!,
-        outputDir: outputDir!,
+        outputDir: outputRel,
         baseDir,
         framework: detectedFramework,
       },

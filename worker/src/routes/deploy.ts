@@ -15,10 +15,12 @@ import {
   getProject,
   deleteProject,
   getDeploymentsByRepo,
+  getProjectByRepo,
 } from '../db'
 import type { DeployRequest, BuildRequest, DeployCommand } from '../types'
 import { detectFromGithubApi } from '../auto-detect'
 import { resolveMainnetEpochs, resolveTestnetEpochs } from '../epochs'
+import { coerceRelativeOutputDir } from '../output-dir'
 
 const router = new Hono<{ Bindings: Env }>()
 
@@ -81,6 +83,8 @@ router.post('/deploy', async (c) => {
     }
   }
 
+  const normalizedOutputDir = coerceRelativeOutputDir(outputDir ?? null, baseDir) ?? outputDir ?? null
+
   // Upsert project with build config
   await upsertProject(db, {
     userAddress: payload.address as string,
@@ -89,7 +93,7 @@ router.post('/deploy', async (c) => {
     baseDir,
     installCommand: installCommand || null,
     buildCommand: buildCommand || null,
-    outputDir: outputDir || null,
+    outputDir: normalizedOutputDir,
     network,
   })
 
@@ -103,7 +107,7 @@ router.post('/deploy', async (c) => {
     baseDir,
     installCommand: installCommand || null,
     buildCommand: buildCommand || null,
-    outputDir: outputDir || null,
+    outputDir: normalizedOutputDir,
     network,
     status: 'queued',
     error: null,
@@ -122,7 +126,7 @@ router.post('/deploy', async (c) => {
       baseDir,
       installCommand,
       buildCommand,
-      outputDir,
+      normalizedOutputDir ?? undefined,
       network,
       epochs,
       body.siteName
@@ -132,7 +136,9 @@ router.post('/deploy', async (c) => {
   return c.json({
     id: deploymentId,
     status: 'queued',
-    detected: framework ? { framework, baseDir, installCommand, buildCommand, outputDir } : null,
+    detected: framework
+      ? { framework, baseDir, installCommand, buildCommand, outputDir: normalizedOutputDir ?? outputDir }
+      : null,
   }, 202)
 })
 
@@ -194,12 +200,16 @@ router.post('/deployments/:id/retry', async (c) => {
   }
 
   // Get project config (latest) for retry
-  const { getProjectByRepo } = await import('../db')
   const project = await getProjectByRepo(db, payload.address as string, deployment.repoUrl)
 
   const retryId = crypto.randomUUID()
 
   const retryConfig = project || deployment
+  const retryBase = retryConfig.baseDir || '.'
+  const safeOutputDir =
+    coerceRelativeOutputDir(retryConfig.outputDir, retryBase) ??
+    coerceRelativeOutputDir(deployment.outputDir, deployment.baseDir || '.') ??
+    'dist'
 
   await createDeployment(db, {
     id: retryId,
@@ -209,7 +219,7 @@ router.post('/deployments/:id/retry', async (c) => {
     baseDir: retryConfig.baseDir,
     installCommand: retryConfig.installCommand,
     buildCommand: retryConfig.buildCommand,
-    outputDir: retryConfig.outputDir,
+    outputDir: safeOutputDir,
     network: retryConfig.network,
     status: 'queued',
     error: null,
@@ -224,11 +234,11 @@ router.post('/deployments/:id/retry', async (c) => {
       db,
       retryId,
       deployment.repoUrl,
-      deployment.branch,
-      deployment.baseDir,
-      deployment.installCommand || undefined,
-      deployment.buildCommand || undefined,
-      deployment.outputDir || undefined,
+      retryConfig.branch,
+      retryConfig.baseDir || '.',
+      retryConfig.installCommand || undefined,
+      retryConfig.buildCommand || undefined,
+      safeOutputDir,
       deployment.network,
       deployment.network === 'mainnet' ? 2 : 1,
       undefined
@@ -444,6 +454,9 @@ async function runBuildAndDeploy(
   try {
     await updateDeployment(db, deploymentId, { status: 'building' })
 
+    const effectiveOutputDir =
+      coerceRelativeOutputDir(outputDir ?? null, baseDir || '.') ?? outputDir
+
     const container = getContainer(env.BUILD_CONTAINER, deploymentId)
 
     // Ensure container is started before sending requests
@@ -458,7 +471,7 @@ async function runBuildAndDeploy(
       baseDir,
       installCommand,
       buildCommand,
-      outputDir,
+      outputDir: effectiveOutputDir,
       githubToken: env.GITHUB_TOKEN || undefined,
       buildId: deploymentId,
     }
@@ -524,7 +537,12 @@ async function runBuildAndDeploy(
       try {
         const statusResp = await timedContainerFetch(container, new Request(`http://localhost/status/${buildId}`))
         if (statusResp.ok) {
-          const state = await statusResp.json() as { status: string; distPath?: string; error?: string }
+          const state = await statusResp.json() as {
+            status: string
+            distPath?: string
+            error?: string
+            detectedConfig?: { outputDir?: string }
+          }
           if (state.status === 'done' && state.distPath) {
             // Update logs one final time
             const finalLogResp = await timedContainerFetch(container, new Request(`http://localhost/logs/${buildId}`))
@@ -533,7 +551,11 @@ async function runBuildAndDeploy(
               if (finalLogData.logs) await updateDeployment(db, deploymentId, { logs: finalLogData.logs })
             }
 
-            await updateDeployment(db, deploymentId, { status: 'built', outputDir: state.distPath })
+            const builtOutput =
+              state.detectedConfig?.outputDir ??
+              coerceRelativeOutputDir(state.distPath, baseDir || '.') ??
+              'dist'
+            await updateDeployment(db, deploymentId, { status: 'built', outputDir: builtOutput })
             break
           }
           if (state.status === 'error') {
