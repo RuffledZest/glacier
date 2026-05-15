@@ -30,10 +30,17 @@ interface BuildResult {
 
 interface BuildState {
   status: 'pending' | 'running' | 'done' | 'error'
+  phase?: 'build' | 'deploy'
   distPath?: string
   error?: string
   fileCount?: number
   totalBytes?: number
+  deployResult?: {
+    success: boolean
+    objectId?: string
+    base36Url?: string
+    error?: string
+  }
   detectedConfig?: BuildResult['detectedConfig']
 }
 
@@ -205,7 +212,7 @@ export function startBuild(params: BuildParams & { buildId?: string }): string {
   const logPath = join(buildDir, 'log.txt')
   writeFileSync(logPath, '')
 
-  writeState(buildId, { status: 'running' })
+  writeState(buildId, { status: 'running', phase: 'build' })
 
   // Run build in background
   runBuildAsync(params, buildDir, logPath, buildId)
@@ -313,6 +320,7 @@ async function runBuildAsync(params: BuildParams, buildDir: string, logPath: str
 
     writeState(buildId, {
       status: 'done',
+      phase: 'build',
       distPath,
       fileCount,
       totalBytes,

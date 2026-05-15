@@ -2,7 +2,7 @@ import { Hono } from 'hono'
 import { serve } from '@hono/node-server'
 import { existsSync, statSync, openSync, readSync, closeSync } from 'node:fs'
 import { join } from 'node:path'
-import { startBuild, readLogs, readState, WORKSPACE } from './builder.js'
+import { startBuild, readLogs, readState, writeState, WORKSPACE } from './builder.js'
 import { deployToWalrus } from './deployer.js'
 
 const app = new Hono()
@@ -132,7 +132,24 @@ app.post('/deploy', async (c) => {
     if (!distPath) return c.json({ success: false, error: 'distPath required', logs: [] }, 400)
     if (!suiKeystore || !suiAddress) return c.json({ success: false, error: 'wallet credentials required', logs: [] }, 400)
     const logPath = buildId ? join(WORKSPACE, buildId, 'log.txt') : undefined
+    if (buildId) {
+      writeState(buildId, { status: 'running', phase: 'deploy', distPath })
+    }
     const result = await deployToWalrus({ distPath, network: network as 'mainnet' | 'testnet', epochs, siteName, suiKeystore, suiAddress, logPath })
+    if (buildId) {
+      writeState(buildId, {
+        status: result.success ? 'done' : 'error',
+        phase: 'deploy',
+        distPath,
+        error: result.success ? undefined : result.error,
+        deployResult: {
+          success: result.success,
+          objectId: result.objectId,
+          base36Url: result.base36Url,
+          error: result.error,
+        },
+      })
+    }
     return c.json(result)
   } catch (err) {
     return c.json({ success: false, error: err instanceof Error ? err.message : 'deploy error', logs: [] }, 500)

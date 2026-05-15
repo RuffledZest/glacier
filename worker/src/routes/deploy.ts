@@ -18,11 +18,73 @@ import {
   getProjectByRepo,
 } from '../db'
 import type { DeployRequest, BuildRequest, DeployCommand } from '../types'
+import type { Deployment, DeployResult } from '../types'
 import { detectFromGithubApi } from '../auto-detect'
 import { resolveMainnetEpochs, resolveTestnetEpochs } from '../epochs'
 import { coerceRelativeOutputDir } from '../output-dir'
 
 const router = new Hono<{ Bindings: Env }>()
+
+type ContainerDeployState = {
+  status?: 'pending' | 'running' | 'done' | 'error'
+  phase?: 'build' | 'deploy'
+  error?: string
+  deployResult?: Omit<DeployResult, 'logs'>
+}
+
+function preferLatestLogs(currentLogs: string, containerLogs: string): string {
+  if (!containerLogs) return currentLogs
+  if (!currentLogs) return containerLogs
+  return containerLogs.length >= currentLogs.length ? containerLogs : currentLogs
+}
+
+async function finalizeDeploymentFromContainer(
+  env: Env,
+  db: D1Database,
+  deployment: Deployment,
+): Promise<Deployment> {
+  if (deployment.status !== 'deploying') return deployment
+
+  try {
+    const container = getContainer(env.BUILD_CONTAINER, deployment.id)
+    await container.startAndWaitForPorts({ cancellationOptions: { portReadyTimeoutMS: 10000 } })
+
+    const statusResp = await timedContainerFetch(container, new Request(`http://localhost/status/${deployment.id}`), 10000)
+    if (!statusResp.ok) return deployment
+
+    const state = await statusResp.json() as ContainerDeployState
+    if (state.phase !== 'deploy') return deployment
+
+    const logResp = await timedContainerFetch(container, new Request(`http://localhost/logs/${deployment.id}`), 10000)
+    let logs = deployment.logs
+    if (logResp.ok) {
+      const logData = await logResp.json() as { logs?: string }
+      logs = preferLatestLogs(deployment.logs, logData.logs || '')
+    }
+
+    if (state.deployResult?.success) {
+      await updateDeployment(db, deployment.id, {
+        status: 'deployed',
+        objectId: state.deployResult.objectId || null,
+        base36Url: state.deployResult.base36Url || null,
+        logs,
+        epochs: deployment.epochs ?? null,
+      })
+    } else if (state.status === 'error' || state.deployResult) {
+      await updateDeployment(db, deployment.id, {
+        status: 'failed',
+        error: state.deployResult?.error || state.error || 'deploy failed',
+        logs,
+      })
+    } else {
+      return deployment
+    }
+
+    return (await getDeployment(db, deployment.id)) || deployment
+  } catch {
+    return deployment
+  }
+}
 
 router.post('/deploy', async (c) => {
   const db = getDb(c)
@@ -158,7 +220,7 @@ router.get('/deployments/:id', async (c) => {
   }
 
   const id = c.req.param('id')
-  const deployment = await getDeployment(db, id)
+  let deployment = await getDeployment(db, id)
 
   if (!deployment) {
     return c.json({ error: 'deployment not found' }, 404)
@@ -167,6 +229,8 @@ router.get('/deployments/:id', async (c) => {
   if (deployment.userAddress !== (payload.address as string)) {
     return c.json({ error: 'not authorized' }, 403)
   }
+
+  deployment = await finalizeDeploymentFromContainer(c.env, db, deployment)
 
   return c.json(deployment)
 })
@@ -265,10 +329,12 @@ router.get('/deployments/:id/logs', async (c) => {
   }
 
   const id = c.req.param('id')
-  const deployment = await getDeployment(db, id)
+  let deployment = await getDeployment(db, id)
   if (!deployment || deployment.userAddress !== (payload.address as string)) {
     return c.json({ error: 'not found' }, 404)
   }
+
+  deployment = await finalizeDeploymentFromContainer(c.env, db, deployment)
 
   // If build is not active, serve logs from D1
   if (!['building', 'deploying'].includes(deployment.status)) {
@@ -690,7 +756,7 @@ async function runBuildAndDeploy(
     if (!deployResult.success) {
       const current = await getDeployment(db, deploymentId)
       const deployLogs = Array.isArray(deployResult.logs) ? deployResult.logs.join('\n') : String(deployResult.logs || '')
-      const combinedLogs = (current?.logs || '') + '\n--- Deploy ---\n' + deployLogs
+      const combinedLogs = preferLatestLogs(current?.logs || '', deployLogs)
       await updateDeployment(db, deploymentId, {
         status: 'failed',
         error: deployResult.error || 'deploy failed',
@@ -701,7 +767,7 @@ async function runBuildAndDeploy(
 
     const current = await getDeployment(db, deploymentId)
     const deployLogs = Array.isArray(deployResult.logs) ? deployResult.logs.join('\n') : String(deployResult.logs || '')
-    const combinedLogs = (current?.logs || '') + '\n--- Deploy ---\n' + deployLogs
+    const combinedLogs = preferLatestLogs(current?.logs || '', deployLogs)
     await updateDeployment(db, deploymentId, {
       status: 'deployed',
       objectId: deployResult.objectId || null,
