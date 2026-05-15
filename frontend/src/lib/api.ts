@@ -58,6 +58,12 @@ export interface Project {
   updatedAt: string
 }
 
+export interface ProjectSecret {
+  name: string
+  createdAt: string
+  updatedAt: string
+}
+
 export async function listProjects(): Promise<Project[]> {
   const resp = await authFetch('/projects')
   if (!resp.ok) { const err = await resp.json(); throw new Error(err.error || 'failed to list projects') }
@@ -74,6 +80,40 @@ export async function getProject(id: string): Promise<{ project: Project; deploy
 export async function deleteProject(id: string): Promise<void> {
   const resp = await authFetch(`/projects/${id}`, { method: 'DELETE' })
   if (!resp.ok) { const err = await resp.json(); throw new Error(err.error || 'delete failed') }
+}
+
+export async function listProjectSecrets(id: string): Promise<ProjectSecret[]> {
+  const resp = await authFetch(`/projects/${id}/secrets`)
+  if (!resp.ok) { const err = await resp.json(); throw new Error(err.error || 'failed to list secrets') }
+  const data = await resp.json()
+  return data.secrets || []
+}
+
+export async function rotateProjectSecret(id: string, name: string, value: string): Promise<ProjectSecret[]> {
+  const resp = await authFetch(`/projects/${id}/secrets/${encodeURIComponent(name)}`, {
+    method: 'PUT',
+    body: JSON.stringify({ value }),
+  })
+  if (!resp.ok) { const err = await resp.json(); throw new Error(err.error || 'failed to save secret') }
+  const data = await resp.json()
+  return data.secrets || []
+}
+
+export async function importProjectSecrets(id: string, content: string): Promise<ProjectSecret[]> {
+  const resp = await authFetch(`/projects/${id}/secrets/import`, {
+    method: 'POST',
+    body: JSON.stringify({ content }),
+  })
+  if (!resp.ok) { const err = await resp.json(); throw new Error(err.error || 'failed to import secrets') }
+  const data = await resp.json()
+  return data.secrets || []
+}
+
+export async function deleteProjectSecret(id: string, name: string): Promise<ProjectSecret[]> {
+  const resp = await authFetch(`/projects/${id}/secrets/${encodeURIComponent(name)}`, { method: 'DELETE' })
+  if (!resp.ok) { const err = await resp.json(); throw new Error(err.error || 'failed to delete secret') }
+  const data = await resp.json()
+  return data.secrets || []
 }
 
 // ── Deployments ──
@@ -93,6 +133,7 @@ export interface DeployRequest {
   repoUrl: string; branch?: string; network?: 'mainnet' | 'testnet'
   baseDir?: string; installCommand?: string; buildCommand?: string; outputDir?: string; siteName?: string
   epochs?: number | 'max'
+  env?: Record<string, string>
 }
 
 export async function createDeployment(req: DeployRequest): Promise<{ id: string; status: string }> {

@@ -25,6 +25,7 @@ export interface Env {
   /** Frontend origin for post-login redirect (e.g. https://app.example.com) */
   FRONTEND_URL?: string
   WEBHOOK_SECRET?: string
+  SECRETS_ENCRYPTION_KEY?: string
   SUI_KEYSTORE?: string
   SUI_ADDRESS?: string
   WALRUS_NETWORK?: string
@@ -35,7 +36,7 @@ const app = new Hono<{ Bindings: Env }>()
 
 app.use('*', cors({
   origin: '*',
-  allowMethods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
+  allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowHeaders: ['Content-Type', 'Authorization'],
 }))
 

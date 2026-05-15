@@ -1,7 +1,7 @@
 import type { D1Database } from '@cloudflare/workers-types'
 import type { Context } from 'hono'
 import type { Env } from './index'
-import type { Deployment, Project } from './types'
+import type { Deployment, Project, ProjectSecretMetadata, ProjectSecretRecord } from './types'
 
 type Ctx = Context<{ Bindings: Env }>
 
@@ -106,6 +106,12 @@ export async function deleteProject(db: D1Database, id: string, userAddress: str
     .bind(project.repoUrl, userAddress)
     .run()
 
+  // Delete encrypted project secrets
+  await db
+    .prepare('DELETE FROM project_secrets WHERE project_id = ?1 AND user_address = ?2')
+    .bind(id, userAddress)
+    .run()
+
   // Delete the project
   await db
     .prepare('DELETE FROM projects WHERE id = ?1')
@@ -124,6 +130,104 @@ function mapProjectRow(row: Record<string, unknown>): Project {
     buildCommand: row.build_command as string | null,
     outputDir: row.output_dir as string | null,
     network: row.network as 'mainnet' | 'testnet',
+    createdAt: row.created_at as string,
+    updatedAt: row.updated_at as string,
+  }
+}
+
+// ── Project Secrets ──
+
+export async function listProjectSecrets(
+  db: D1Database,
+  projectId: string,
+  userAddress: string
+): Promise<ProjectSecretMetadata[]> {
+  const result = await db
+    .prepare(
+      `SELECT name, created_at, updated_at
+       FROM project_secrets
+       WHERE project_id = ?1 AND user_address = ?2
+       ORDER BY name ASC`
+    )
+    .bind(projectId, userAddress)
+    .all<Record<string, unknown>>()
+
+  return (result.results ?? []).map((row) => ({
+    name: row.name as string,
+    createdAt: row.created_at as string,
+    updatedAt: row.updated_at as string,
+  }))
+}
+
+export async function getProjectSecretRecords(
+  db: D1Database,
+  projectId: string,
+  userAddress: string
+): Promise<ProjectSecretRecord[]> {
+  const result = await db
+    .prepare(
+      `SELECT *
+       FROM project_secrets
+       WHERE project_id = ?1 AND user_address = ?2
+       ORDER BY name ASC`
+    )
+    .bind(projectId, userAddress)
+    .all<Record<string, unknown>>()
+
+  return (result.results ?? []).map(mapProjectSecretRow)
+}
+
+export async function upsertProjectSecret(
+  db: D1Database,
+  record: Omit<ProjectSecretRecord, 'createdAt' | 'updatedAt'>
+): Promise<void> {
+  await db
+    .prepare(
+      `INSERT INTO project_secrets
+       (id, project_id, user_address, name, ciphertext, iv, algorithm, key_version)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+       ON CONFLICT(project_id, name) DO UPDATE SET
+         ciphertext = excluded.ciphertext,
+         iv = excluded.iv,
+         algorithm = excluded.algorithm,
+         key_version = excluded.key_version,
+         updated_at = datetime('now')`
+    )
+    .bind(
+      record.id,
+      record.projectId,
+      record.userAddress,
+      record.name,
+      record.ciphertext,
+      record.iv,
+      record.algorithm,
+      record.keyVersion,
+    )
+    .run()
+}
+
+export async function deleteProjectSecret(
+  db: D1Database,
+  projectId: string,
+  userAddress: string,
+  name: string
+): Promise<void> {
+  await db
+    .prepare('DELETE FROM project_secrets WHERE project_id = ?1 AND user_address = ?2 AND name = ?3')
+    .bind(projectId, userAddress, name)
+    .run()
+}
+
+function mapProjectSecretRow(row: Record<string, unknown>): ProjectSecretRecord {
+  return {
+    id: row.id as string,
+    projectId: row.project_id as string,
+    userAddress: row.user_address as string,
+    name: row.name as string,
+    ciphertext: row.ciphertext as string,
+    iv: row.iv as string,
+    algorithm: row.algorithm as 'AES-256-GCM',
+    keyVersion: row.key_version as string,
     createdAt: row.created_at as string,
     updatedAt: row.updated_at as string,
   }

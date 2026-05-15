@@ -16,6 +16,7 @@ Deploy static sites from GitHub to Walrus (Sui). **Sign-in is GitHub OAuth only*
 | `API_PUBLIC_URL` | If no `GITHUB_REDIRECT_URI` | Public origin of this worker (no trailing slash), used to build the default OAuth callback URL. |
 | `SUI_KEYSTORE`, `SUI_ADDRESS` | For deploy | Platform wallet used to publish sites. |
 | `WEBHOOK_SECRET`, `GITHUB_TOKEN` | Optional | Webhooks and unauthenticated GitHub API fallback. |
+| `SECRETS_ENCRYPTION_KEY` | For project secrets | 32-byte AES key for encrypting project build env vars in D1. Use a base64-encoded 32-byte value or prefix it with `base64:`. |
 
 ### Frontend (Vite)
 

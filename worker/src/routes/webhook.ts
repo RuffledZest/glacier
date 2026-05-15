@@ -2,10 +2,11 @@ import { Hono } from 'hono'
 import { getContainer } from '@cloudflare/containers'
 import type { Env } from '..'
 import { timedContainerFetch } from '../container-fetch'
-import { createDeployment, updateDeployment, touchDeployment, getDeployment, getDb, upsertProject } from '../db'
+import { createDeployment, updateDeployment, touchDeployment, getDeployment, getDb, upsertProject, getProjectSecretRecords } from '../db'
 import type { BuildRequest, DeployCommand } from '../types'
 import { detectFromGithubApi } from '../auto-detect'
 import { resolveMainnetEpochs, resolveTestnetEpochs } from '../epochs'
+import { decryptProjectSecret } from '../secrets'
 
 const router = new Hono<{ Bindings: Env }>()
 
@@ -128,7 +129,7 @@ router.post('/github', async (c) => {
     // Detection failed — will retry post-clone
   }
 
-  await upsertProject(db, {
+  const projectId = await upsertProject(db, {
     userAddress,
     repoUrl,
     branch,
@@ -170,6 +171,12 @@ router.post('/github', async (c) => {
           cancellationOptions: { portReadyTimeoutMS: 30000 },
         })
 
+        const projectEnv: Record<string, string> = {}
+        const secretRecords = await getProjectSecretRecords(db, projectId, userAddress)
+        for (const record of secretRecords) {
+          projectEnv[record.name] = await decryptProjectSecret(env, record)
+        }
+
         const buildReq: BuildRequest = {
           repoUrl,
           branch,
@@ -179,6 +186,7 @@ router.post('/github', async (c) => {
           outputDir,
           githubToken: env.GITHUB_TOKEN || undefined,
           buildId: deploymentId,
+          env: projectEnv,
         }
 
         const startResp = await timedContainerFetch(

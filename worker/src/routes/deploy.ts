@@ -16,12 +16,25 @@ import {
   deleteProject,
   getDeploymentsByRepo,
   getProjectByRepo,
+  listProjectSecrets,
+  getProjectSecretRecords,
+  upsertProjectSecret,
+  deleteProjectSecret,
 } from '../db'
 import type { DeployRequest, BuildRequest, DeployCommand } from '../types'
 import type { Deployment, DeployResult } from '../types'
 import { detectFromGithubApi } from '../auto-detect'
 import { resolveMainnetEpochs, resolveTestnetEpochs } from '../epochs'
 import { coerceRelativeOutputDir } from '../output-dir'
+import {
+  MAX_PROJECT_SECRETS,
+  decryptProjectSecret,
+  encryptProjectSecret,
+  normalizeSecretMap,
+  parseEnvFile,
+  validateSecretName,
+  validateSecretValue,
+} from '../secrets'
 
 const router = new Hono<{ Bindings: Env }>()
 
@@ -36,6 +49,60 @@ function preferLatestLogs(currentLogs: string, containerLogs: string): string {
   if (!containerLogs) return currentLogs
   if (!currentLogs) return containerLogs
   return containerLogs.length >= currentLogs.length ? containerLogs : currentLogs
+}
+
+async function upsertProjectSecretsFromMap(
+  env: Env,
+  db: D1Database,
+  projectId: string,
+  userAddress: string,
+  input: unknown,
+): Promise<void> {
+  const secrets = normalizeSecretMap(input)
+  const entries = Object.entries(secrets)
+  if (entries.length === 0) return
+
+  const existing = await listProjectSecrets(db, projectId, userAddress)
+  const uniqueNames = new Set([...existing.map((s) => s.name), ...entries.map(([name]) => name)])
+  if (uniqueNames.size > MAX_PROJECT_SECRETS) {
+    throw new Error(`A project can store at most ${MAX_PROJECT_SECRETS} secrets`)
+  }
+
+  for (const [name, value] of entries) {
+    const encrypted = await encryptProjectSecret(env, { userAddress, projectId, name, value })
+    await upsertProjectSecret(db, {
+      id: crypto.randomUUID(),
+      projectId,
+      userAddress,
+      name,
+      ...encrypted,
+    })
+  }
+}
+
+async function loadProjectBuildEnv(
+  env: Env,
+  db: D1Database,
+  projectId: string | undefined,
+  userAddress: string,
+  transientInput?: unknown,
+): Promise<Record<string, string>> {
+  const buildEnv: Record<string, string> = {}
+
+  if (projectId) {
+    const records = await getProjectSecretRecords(db, projectId, userAddress)
+    for (const record of records) {
+      buildEnv[record.name] = await decryptProjectSecret(env, record)
+    }
+  }
+
+  const transient = normalizeSecretMap(transientInput)
+  const uniqueNames = new Set([...Object.keys(buildEnv), ...Object.keys(transient)])
+  if (uniqueNames.size > MAX_PROJECT_SECRETS) {
+    throw new Error(`A build can use at most ${MAX_PROJECT_SECRETS} secrets`)
+  }
+
+  return { ...buildEnv, ...transient }
 }
 
 async function finalizeDeploymentFromContainer(
@@ -169,9 +236,11 @@ router.post('/deploy', async (c) => {
 
   const normalizedOutputDir = coerceRelativeOutputDir(outputDir ?? null, baseDir) ?? outputDir ?? null
 
+  const userAddress = payload.address as string
+
   // Upsert project with build config
-  await upsertProject(db, {
-    userAddress: payload.address as string,
+  const projectId = await upsertProject(db, {
+    userAddress,
     repoUrl,
     branch,
     baseDir,
@@ -181,11 +250,17 @@ router.post('/deploy', async (c) => {
     network,
   })
 
+  try {
+    await upsertProjectSecretsFromMap(c.env, db, projectId, userAddress, body.env)
+  } catch (err) {
+    return c.json({ error: err instanceof Error ? err.message : 'invalid project secrets' }, 400)
+  }
+
   const deploymentId = crypto.randomUUID()
 
   await createDeployment(db, {
     id: deploymentId,
-    userAddress: payload.address as string,
+    userAddress,
     repoUrl,
     branch,
     baseDir,
@@ -206,6 +281,8 @@ router.post('/deploy', async (c) => {
       c.env,
       db,
       deploymentId,
+      userAddress,
+      projectId,
       repoUrl,
       branch,
       baseDir,
@@ -325,6 +402,8 @@ router.post('/deployments/:id/retry', async (c) => {
       c.env,
       db,
       retryId,
+      payload.address as string,
+      project?.id,
       deployment.repoUrl,
       retryConfig.branch,
       retryConfig.baseDir || '.',
@@ -483,6 +562,141 @@ router.get('/projects/:id', async (c) => {
   return c.json({ project, deployments })
 })
 
+router.get('/projects/:id/secrets', async (c) => {
+  const db = getDb(c)
+
+  const authHeader = c.req.header('Authorization')
+  if (!authHeader?.startsWith('Bearer ')) {
+    return c.json({ error: 'missing authorization header' }, 401)
+  }
+
+  const token = authHeader.slice(7)
+  const payload = await verifyJwt(token, c.env.JWT_SECRET)
+  if (!payload) {
+    return c.json({ error: 'invalid or expired token' }, 401)
+  }
+
+  const id = c.req.param('id')
+  const project = await getProject(db, id)
+  const userAddress = payload.address as string
+
+  if (!project || project.userAddress !== userAddress) {
+    return c.json({ error: 'project not found' }, 404)
+  }
+
+  const secrets = await listProjectSecrets(db, id, userAddress)
+  return c.json({ secrets })
+})
+
+router.put('/projects/:id/secrets/:name', async (c) => {
+  const db = getDb(c)
+
+  const authHeader = c.req.header('Authorization')
+  if (!authHeader?.startsWith('Bearer ')) {
+    return c.json({ error: 'missing authorization header' }, 401)
+  }
+
+  const token = authHeader.slice(7)
+  const payload = await verifyJwt(token, c.env.JWT_SECRET)
+  if (!payload) {
+    return c.json({ error: 'invalid or expired token' }, 401)
+  }
+
+  const id = c.req.param('id')
+  const name = c.req.param('name')
+  const userAddress = payload.address as string
+  const project = await getProject(db, id)
+
+  if (!project || project.userAddress !== userAddress) {
+    return c.json({ error: 'project not found' }, 404)
+  }
+
+  const nameError = validateSecretName(name)
+  if (nameError) return c.json({ error: nameError }, 400)
+
+  const body = await c.req.json<{ value?: unknown }>()
+  if (typeof body.value !== 'string') return c.json({ error: 'value is required' }, 400)
+
+  const valueError = validateSecretValue(body.value)
+  if (valueError) return c.json({ error: valueError }, 400)
+
+  try {
+    await upsertProjectSecretsFromMap(c.env, db, id, userAddress, { [name]: body.value })
+  } catch (err) {
+    return c.json({ error: err instanceof Error ? err.message : 'secret update failed' }, 400)
+  }
+
+  const secrets = await listProjectSecrets(db, id, userAddress)
+  return c.json({ secrets })
+})
+
+router.post('/projects/:id/secrets/import', async (c) => {
+  const db = getDb(c)
+
+  const authHeader = c.req.header('Authorization')
+  if (!authHeader?.startsWith('Bearer ')) {
+    return c.json({ error: 'missing authorization header' }, 401)
+  }
+
+  const token = authHeader.slice(7)
+  const payload = await verifyJwt(token, c.env.JWT_SECRET)
+  if (!payload) {
+    return c.json({ error: 'invalid or expired token' }, 401)
+  }
+
+  const id = c.req.param('id')
+  const userAddress = payload.address as string
+  const project = await getProject(db, id)
+
+  if (!project || project.userAddress !== userAddress) {
+    return c.json({ error: 'project not found' }, 404)
+  }
+
+  const body = await c.req.json<{ content?: unknown; secrets?: unknown }>()
+
+  try {
+    const fromContent = typeof body.content === 'string' ? parseEnvFile(body.content) : {}
+    const fromMap = body.secrets ? normalizeSecretMap(body.secrets) : {}
+    await upsertProjectSecretsFromMap(c.env, db, id, userAddress, { ...fromContent, ...fromMap })
+  } catch (err) {
+    return c.json({ error: err instanceof Error ? err.message : 'secret import failed' }, 400)
+  }
+
+  const secrets = await listProjectSecrets(db, id, userAddress)
+  return c.json({ secrets })
+})
+
+router.delete('/projects/:id/secrets/:name', async (c) => {
+  const db = getDb(c)
+
+  const authHeader = c.req.header('Authorization')
+  if (!authHeader?.startsWith('Bearer ')) {
+    return c.json({ error: 'missing authorization header' }, 401)
+  }
+
+  const token = authHeader.slice(7)
+  const payload = await verifyJwt(token, c.env.JWT_SECRET)
+  if (!payload) {
+    return c.json({ error: 'invalid or expired token' }, 401)
+  }
+
+  const id = c.req.param('id')
+  const name = c.req.param('name')
+  const userAddress = payload.address as string
+  const project = await getProject(db, id)
+
+  if (!project || project.userAddress !== userAddress) {
+    return c.json({ error: 'project not found' }, 404)
+  }
+
+  const nameError = validateSecretName(name)
+  if (nameError) return c.json({ error: nameError }, 400)
+
+  await deleteProjectSecret(db, id, userAddress, name)
+  const secrets = await listProjectSecrets(db, id, userAddress)
+  return c.json({ secrets })
+})
+
 router.delete('/projects/:id', async (c) => {
   const db = getDb(c)
 
@@ -535,6 +749,8 @@ async function runBuildAndDeploy(
   env: Env,
   db: D1Database,
   deploymentId: string,
+  userAddress: string,
+  projectId: string | undefined,
   repoUrl: string,
   branch: string,
   baseDir: string,
@@ -550,6 +766,7 @@ async function runBuildAndDeploy(
 
     const effectiveOutputDir =
       coerceRelativeOutputDir(outputDir ?? null, baseDir || '.') ?? outputDir
+    const projectEnv = await loadProjectBuildEnv(env, db, projectId, userAddress)
 
     const container = getContainer(env.BUILD_CONTAINER, deploymentId)
 
@@ -568,6 +785,7 @@ async function runBuildAndDeploy(
       outputDir: effectiveOutputDir,
       githubToken: env.GITHUB_TOKEN || undefined,
       buildId: deploymentId,
+      env: projectEnv,
     }
 
     const startResp = await timedContainerFetch(

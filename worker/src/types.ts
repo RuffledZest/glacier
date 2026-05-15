@@ -18,6 +18,8 @@ export interface DeployRequest {
   /** Mainnet: 2 | 7 | 13 | 26, or omit (→2) / `"max"` (→26 legacy). Testnet: 1–7 (≈ days). */
   epochs?: number | 'max'
   siteName?: string
+  /** Optional env vars to import into the project before this deployment. Values are never returned by APIs. */
+  env?: Record<string, string>
 }
 
 export interface Project {
@@ -64,6 +66,27 @@ export interface BuildRequest {
   outputDir?: string
   githubToken?: string
   buildId?: string
+  /** Project secrets decrypted by the worker and injected into install/build only. */
+  env?: Record<string, string>
+}
+
+export interface ProjectSecretRecord {
+  id: string
+  projectId: string
+  userAddress: string
+  name: string
+  ciphertext: string
+  iv: string
+  algorithm: 'AES-256-GCM'
+  keyVersion: string
+  createdAt: string
+  updatedAt: string
+}
+
+export interface ProjectSecretMetadata {
+  name: string
+  createdAt: string
+  updatedAt: string
 }
 
 export interface BuildResult {

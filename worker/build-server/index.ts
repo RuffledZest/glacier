@@ -12,12 +12,12 @@ app.post('/build', async (c) => {
   try {
     const body = await c.req.json()
     const {
-      repoUrl, branch = 'main', baseDir, installCommand, buildCommand, outputDir, githubToken,
+      repoUrl, branch = 'main', baseDir, installCommand, buildCommand, outputDir, githubToken, env,
     } = body as {
-      repoUrl: string; branch: string; baseDir?: string; installCommand?: string; buildCommand?: string; outputDir?: string; githubToken?: string
+      repoUrl: string; branch: string; baseDir?: string; installCommand?: string; buildCommand?: string; outputDir?: string; githubToken?: string; env?: Record<string, string>
     }
     if (!repoUrl) return c.json({ success: false, error: 'repoUrl is required' }, 400)
-    const buildId = startBuild({ repoUrl, branch, baseDir, installCommand, buildCommand, outputDir, githubToken, buildId: body.buildId })
+    const buildId = startBuild({ repoUrl, branch, baseDir, installCommand, buildCommand, outputDir, githubToken, env, buildId: body.buildId })
     return c.json({ buildId, status: 'started' })
   } catch (err) {
     return c.json({ success: false, error: err instanceof Error ? err.message : 'unknown error' }, 500)

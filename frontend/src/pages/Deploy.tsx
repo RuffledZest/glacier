@@ -20,7 +20,7 @@ import { Card } from '../components/ui/Card'
 import { Badge } from '../components/ui/Badge'
 import { Input } from '../components/ui/Input'
 import { Spinner } from '../components/ui/Spinner'
-import { Search, Lock, Globe, Box, Settings2, ShieldCheck, ChevronDown, Rocket, FileCode2, Package, TerminalSquare, Terminal } from 'lucide-react'
+import { Search, Lock, Globe, Box, Settings2, ShieldCheck, ChevronDown, Rocket, FileCode2, Package, TerminalSquare, Terminal, Upload, KeyRound } from 'lucide-react'
 
 // Simple SVG for GitHub since Lucide v0.300+ removed brand icons
 function GithubIcon({ className }: { className?: string }) {
@@ -44,6 +44,55 @@ const FRAMEWORK_BADGES: Record<string, { bg: 'default' | 'success' | 'warning' |
   'Angular':    { bg: 'danger' },
   'React':      { bg: 'info' },
   'Static HTML':{ bg: 'outline' },
+}
+
+const ENV_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/
+const RESERVED_ENV_NAMES = new Set([
+  'PATH', 'HOME', 'SHELL', 'USER', 'PWD', 'OLDPWD', 'NODE_ENV', 'CI', 'PORT', 'HOST',
+  'GITHUB_TOKEN', 'SUI_KEYSTORE', 'SUI_ADDRESS', 'SECRETS_ENCRYPTION_KEY', 'JWT_SECRET',
+  'GITHUB_CLIENT_SECRET', 'WEBHOOK_SECRET', 'WALRUS_NETWORK', 'WALRUS_EPOCHS',
+])
+const RESERVED_ENV_PREFIXES = ['SUI_', 'CF_', 'CLOUDFLARE_', 'WRANGLER_', 'GLACIER_']
+
+function parseEnvText(content: string): Record<string, string> {
+  const result: Record<string, string> = {}
+  const lines = content.replace(/^\uFEFF/, '').split(/\r?\n/)
+
+  for (let i = 0; i < lines.length; i++) {
+    const original = lines[i]
+    const line = original.trim()
+    if (!line || line.startsWith('#')) continue
+
+    const source = line.startsWith('export ') ? line.slice(7).trimStart() : line
+    const eq = source.indexOf('=')
+    if (eq <= 0) throw new Error(`Invalid env line ${i + 1}`)
+
+    const name = source.slice(0, eq).trim()
+    let value = source.slice(eq + 1).trim()
+    const upper = name.toUpperCase()
+    if (!ENV_NAME_RE.test(name)) throw new Error(`Invalid secret name on line ${i + 1}`)
+    if (RESERVED_ENV_NAMES.has(upper) || RESERVED_ENV_PREFIXES.some((prefix) => upper.startsWith(prefix))) {
+      throw new Error(`${name} is reserved`)
+    }
+
+    if (
+      (value.startsWith('"') && value.endsWith('"')) ||
+      (value.startsWith("'") && value.endsWith("'"))
+    ) {
+      value = value.slice(1, -1)
+      if (original.includes('"')) {
+        value = value
+          .replace(/\\n/g, '\n')
+          .replace(/\\r/g, '\r')
+          .replace(/\\t/g, '\t')
+          .replace(/\\"/g, '"')
+          .replace(/\\\\/g, '\\')
+      }
+    }
+    result[name] = value
+  }
+
+  return result
 }
 
 export default function Deploy() {
@@ -92,6 +141,8 @@ export default function Deploy() {
   const [estimate, setEstimate] = useState<CostEstimate | null>(null)
   const [estimateLogsOpen, setEstimateLogsOpen] = useState(false)
   const [estimateLogsText, setEstimateLogsText] = useState('')
+  const [envText, setEnvText] = useState('')
+  const [envFileName, setEnvFileName] = useState('')
 
   const [showAdvanced, setShowAdvanced] = useState(false)
 
@@ -103,6 +154,14 @@ export default function Deploy() {
     () => formatApproxActiveUntilDate(retentionDays),
     [retentionDays],
   )
+  const parsedEnv = useMemo(() => {
+    try {
+      return { values: parseEnvText(envText), error: null as string | null }
+    } catch (err) {
+      return { values: {} as Record<string, string>, error: err instanceof Error ? err.message : 'Invalid env file' }
+    }
+  }, [envText])
+  const envNames = useMemo(() => Object.keys(parsedEnv.values).sort(), [parsedEnv.values])
 
   // Init — check GitHub connection (token from OAuth hash is applied in useAuth)
   useEffect(() => {
@@ -212,6 +271,10 @@ export default function Deploy() {
 
   async function handleDeploy() {
     if (!selectedRepo) return
+    if (parsedEnv.error) {
+      setError(parsedEnv.error)
+      return
+    }
     setSubmitting(true)
     setError(null)
     try {
@@ -225,6 +288,7 @@ export default function Deploy() {
         outputDir: outputDir || undefined,
         siteName: siteName || undefined,
         epochs: network === 'mainnet' ? mainnetTierIndexToEpochs(mainnetTierIndex) : (epochs || 1),
+        env: envNames.length > 0 ? parsedEnv.values : undefined,
       })
       navigate(`/deployments/${result.id}`)
     } catch (err) {
@@ -235,6 +299,10 @@ export default function Deploy() {
 
   async function handleEstimate() {
     if (!selectedRepo) return
+    if (parsedEnv.error) {
+      setError(parsedEnv.error)
+      return
+    }
     setEstimating(true)
     setEstimate(null)
     setError(null)
@@ -250,6 +318,7 @@ export default function Deploy() {
         buildCommand: buildCmd || undefined,
         outputDir: outputDir || undefined,
         epochs: network === 'mainnet' ? mainnetTierIndexToEpochs(mainnetTierIndex) : (epochs || 1),
+        env: envNames.length > 0 ? parsedEnv.values : undefined,
       })
       setEstimate(result)
       setEstimateLogsText(result.logs ?? '')
@@ -271,6 +340,11 @@ export default function Deploy() {
       const url = await getGithubLoginUrl()
       window.location.href = url
     } catch (err) { console.error(err) }
+  }
+
+  async function handleEnvFile(file: File) {
+    setEnvFileName(file.name)
+    setEnvText(await file.text())
   }
 
   // Filter repos
@@ -579,6 +653,65 @@ export default function Deploy() {
                 </div>
               )}
 
+              <div className="space-y-3 pt-2 border-t border-border/50">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-2">
+                    <KeyRound className="w-4 h-4 text-textMuted" />
+                    <label className="text-xs font-semibold text-textMuted uppercase tracking-wider">Build Env</label>
+                  </div>
+                  {envNames.length > 0 && (
+                    <span className="text-xs text-info">{envNames.length} secret{envNames.length === 1 ? '' : 's'}</span>
+                  )}
+                </div>
+                <label
+                  onDragOver={(e) => e.preventDefault()}
+                  onDrop={(e) => {
+                    e.preventDefault()
+                    const file = e.dataTransfer.files[0]
+                    if (file) void handleEnvFile(file)
+                  }}
+                  className="block rounded-lg border border-dashed border-border bg-surface/40 p-3 hover:border-info/60 transition-colors cursor-pointer"
+                >
+                  <input
+                    type="file"
+                    accept=".env,text/plain"
+                    className="sr-only"
+                    onChange={(e) => {
+                      const file = e.target.files?.[0]
+                      if (file) void handleEnvFile(file)
+                    }}
+                  />
+                  <div className="flex items-center gap-2 text-sm text-textMuted">
+                    <Upload className="w-4 h-4" />
+                    <span>{envFileName || 'Drop an .env file or click to choose one'}</span>
+                  </div>
+                </label>
+                <textarea
+                  value={envText}
+                  onChange={(e) => {
+                    setEnvText(e.target.value)
+                    if (!e.target.value) setEnvFileName('')
+                  }}
+                  spellCheck={false}
+                  placeholder="VITE_API_URL=https://example.com"
+                  className="w-full min-h-[96px] resize-y rounded-md border border-border bg-surface px-3 py-2 font-mono text-xs text-white placeholder:text-textMuted focus:outline-none focus:ring-1 focus:ring-primary"
+                />
+                {parsedEnv.error ? (
+                  <p className="text-xs text-danger">{parsedEnv.error}</p>
+                ) : envNames.length > 0 ? (
+                  <div className="flex flex-wrap gap-1.5">
+                    {envNames.slice(0, 8).map((name) => (
+                      <span key={name} className="rounded border border-info/30 bg-info/10 px-2 py-0.5 text-[11px] font-mono text-info">
+                        {name}
+                      </span>
+                    ))}
+                    {envNames.length > 8 && <span className="text-xs text-textMuted">+{envNames.length - 8} more</span>}
+                  </div>
+                ) : (
+                  <p className="text-xs text-textMuted">Values are saved as project secrets and injected into install/build only.</p>
+                )}
+              </div>
+
               {error && (
                 <div className="text-sm text-danger bg-danger/10 p-3 rounded-lg border border-danger/20 flex items-start gap-2">
                   <TerminalSquare className="w-4 h-4 mt-0.5 flex-shrink-0" />
@@ -593,7 +726,7 @@ export default function Deploy() {
                     variant="secondary"
                     className="w-full border-dashed bg-surface/50"
                     onClick={handleEstimate}
-                    disabled={estimating || !selectedRepo || detecting}
+                    disabled={estimating || !selectedRepo || detecting || !!parsedEnv.error}
                   >
                     {estimating ? <Spinner className="mr-2" /> : <FileCode2 className="w-4 h-4 mr-2" />}
                     {estimating ? 'Calculating Cost...' : 'Calculate Storage Cost'}
@@ -668,7 +801,7 @@ export default function Deploy() {
                 size="lg"
                 className="w-full font-bold text-base shadow-lg shadow-primary/20"
                 onClick={handleDeploy}
-                disabled={submitting || detecting || (projects.length > 1 && !selectedFolder)}
+                disabled={submitting || detecting || !!parsedEnv.error || (projects.length > 1 && !selectedFolder)}
               >
                 {submitting ? <Spinner className="mr-2" /> : <Rocket className="w-5 h-5 mr-2" />}
                 {submitting ? 'Deploying...' : 'Deploy to Walrus'}

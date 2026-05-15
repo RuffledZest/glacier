@@ -5,6 +5,8 @@ import { verifyJwt } from '../auth'
 import type { BuildRequest } from '../types'
 import { detectFromGithubApi } from '../auto-detect'
 import { resolveMainnetEpochs, resolveTestnetEpochs } from '../epochs'
+import { getProjectByRepo, getProjectSecretRecords } from '../db'
+import { MAX_PROJECT_SECRETS, decryptProjectSecret, normalizeSecretMap } from '../secrets'
 
 const router = new Hono<{ Bindings: Env }>()
 
@@ -26,6 +28,7 @@ router.post('/estimate', async (c) => {
 
   const body = await c.req.json<BuildRequest & { epochs?: number | 'max'; network?: 'mainnet' | 'testnet' }>()
   const { repoUrl, branch = 'main', network = 'testnet' } = body
+  const userAddress = payload.address as string
 
   if (!repoUrl) return c.json({ error: 'repoUrl is required' }, 400)
   if (!repoUrl.startsWith('https://github.com/')) return c.json({ error: 'only GitHub repositories are supported' }, 400)
@@ -57,6 +60,26 @@ router.post('/estimate', async (c) => {
   }
 
   const estimateId = crypto.randomUUID()
+  let projectEnv: Record<string, string> = {}
+
+  try {
+    const project = await getProjectByRepo(c.env.DB, userAddress, repoUrl)
+    if (project) {
+      const records = await getProjectSecretRecords(c.env.DB, project.id, userAddress)
+      for (const record of records) {
+        projectEnv[record.name] = await decryptProjectSecret(c.env, record)
+      }
+    }
+
+    const transient = normalizeSecretMap(body.env)
+    const uniqueNames = new Set([...Object.keys(projectEnv), ...Object.keys(transient)])
+    if (uniqueNames.size > MAX_PROJECT_SECRETS) {
+      return c.json({ error: `A build can use at most ${MAX_PROJECT_SECRETS} secrets` }, 400)
+    }
+    projectEnv = { ...projectEnv, ...transient }
+  } catch (err) {
+    return c.json({ error: err instanceof Error ? err.message : 'invalid project secrets' }, 400)
+  }
 
   async function readContainerLogs(container: ReturnType<typeof getContainer>): Promise<string> {
     try {
@@ -84,6 +107,7 @@ router.post('/estimate', async (c) => {
       outputDir,
       githubToken: c.env.GITHUB_TOKEN || undefined,
       buildId: estimateId,
+      env: projectEnv,
     }
 
     const startResp = await container.fetch(

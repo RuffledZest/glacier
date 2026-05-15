@@ -11,6 +11,7 @@ interface BuildParams {
   buildCommand?: string
   outputDir?: string
   githubToken?: string
+  env?: Record<string, string>
 }
 
 interface BuildResult {
@@ -58,6 +59,7 @@ const DANGEROUS_EXTENSIONS = new Set([
 ])
 
 const MAX_LOG_SIZE = 10 * 1024 * 1024 // 10MB cap on build log file
+type LogRedactor = (data: string) => string
 
 /** Mirrors worker/src/output-dir.ts — keep in sync. */
 function coerceRelativeOutputDir(outputDir: string | null | undefined, baseDir: string): string | undefined {
@@ -81,7 +83,24 @@ function coerceRelativeOutputDir(outputDir: string | null | undefined, baseDir: 
   return rest || 'dist'
 }
 
-function safeAppend(logPath: string, data: string): void {
+function createLogRedactor(env: Record<string, string> | undefined): LogRedactor {
+  const replacements = Object.entries(env || {})
+    .filter(([, value]) => value.length > 0)
+    .sort((a, b) => b[1].length - a[1].length)
+
+  if (replacements.length === 0) return (data) => data
+
+  return (data) => {
+    let redacted = data
+    for (const [name, value] of replacements) {
+      redacted = redacted.split(value).join(`[secret:${name}]`)
+    }
+    return redacted
+  }
+}
+
+function safeAppend(logPath: string, data: string, redactor: LogRedactor = (value) => value): void {
+  const redactedData = redactor(data)
   try {
     const current = statSync(logPath).size
     if (current >= MAX_LOG_SIZE) {
@@ -89,31 +108,39 @@ function safeAppend(logPath: string, data: string): void {
       return
     }
     const remaining = MAX_LOG_SIZE - current
-    appendFileSync(logPath, data.length > remaining ? data.slice(0, remaining) + '\n[log truncated: exceeded 10MB max]\n' : data)
+    appendFileSync(logPath, redactedData.length > remaining ? redactedData.slice(0, remaining) + '\n[log truncated: exceeded 10MB max]\n' : redactedData)
   } catch {
-    appendFileSync(logPath, data)
+    appendFileSync(logPath, redactedData)
   }
 }
 
-function childEnv(phase: 'clone' | 'install' | 'build'): NodeJS.ProcessEnv {
+function childEnv(phase: 'clone' | 'install' | 'build', projectEnv: Record<string, string> = {}): NodeJS.ProcessEnv {
   const { NODE_ENV: _drop, ...rest } = process.env
   const base: NodeJS.ProcessEnv = { ...rest, HOME: '/root', PATH: process.env.PATH }
+  const withProjectEnv = phase === 'clone' ? base : { ...base, ...projectEnv }
   if (phase === 'install') {
     // Image sets NODE_ENV=production; npm omits devDependencies in that case. Install needs tsc/vite/etc.
-    return base
+    return withProjectEnv
   }
   if (phase === 'build') {
     // CI encourages line-oriented tool output (npm/vite) so logs flush during long bundle steps.
-    return { ...base, NODE_ENV: 'production', CI: 'true' }
+    return { ...withProjectEnv, NODE_ENV: 'production', CI: 'true' }
   }
   return base
 }
 
-function runAsync(cmd: string, cwd: string, logPath: string, phase: 'clone' | 'install' | 'build'): Promise<{ exitCode: number }> {
+function runAsync(
+  cmd: string,
+  cwd: string,
+  logPath: string,
+  phase: 'clone' | 'install' | 'build',
+  projectEnv: Record<string, string> = {},
+  redactor?: LogRedactor,
+): Promise<{ exitCode: number }> {
   return new Promise((resolve) => {
-    const proc = spawn(cmd, { shell: true, cwd, env: childEnv(phase) })
-    proc.stdout.on('data', (d: Buffer) => safeAppend(logPath, d.toString()))
-    proc.stderr.on('data', (d: Buffer) => safeAppend(logPath, d.toString()))
+    const proc = spawn(cmd, { shell: true, cwd, env: childEnv(phase, projectEnv) })
+    proc.stdout.on('data', (d: Buffer) => safeAppend(logPath, d.toString(), redactor))
+    proc.stderr.on('data', (d: Buffer) => safeAppend(logPath, d.toString(), redactor))
     proc.on('close', (code) => resolve({ exitCode: code ?? 1 }))
     proc.on('error', () => resolve({ exitCode: 1 }))
   })
@@ -221,9 +248,10 @@ export function startBuild(params: BuildParams & { buildId?: string }): string {
 }
 
 async function runBuildAsync(params: BuildParams, buildDir: string, logPath: string, buildId: string): Promise<void> {
-  const log = (msg: string) => safeAppend(logPath, msg + '\n')
-
   const { repoUrl, branch = 'main', baseDir: baseDirOverride, installCommand: installOverride, buildCommand: buildOverride, outputDir: outputOverride, githubToken } = params
+  const projectEnv = params.env || {}
+  const redactor = createLogRedactor(projectEnv)
+  const log = (msg: string) => safeAppend(logPath, msg + '\n', redactor)
 
   try {
     const repoName = repoUrl.split('/').pop()?.replace('.git', '') || 'repo'
@@ -276,10 +304,13 @@ async function runBuildAsync(params: BuildParams, buildDir: string, logPath: str
     log(`Install: ${installCommand}`)
     log(`Build: ${buildCommand}`)
     log(`Output: ${outputDir}`)
+    if (Object.keys(projectEnv).length > 0) {
+      log(`Injected ${Object.keys(projectEnv).length} project environment variable(s) for install/build`)
+    }
 
     // Install
     log(`Running ${installCommand}...`)
-    const installResult = await runAsync(installCommand!, workingDir, logPath, 'install')
+    const installResult = await runAsync(installCommand!, workingDir, logPath, 'install', projectEnv, redactor)
     if (installResult.exitCode !== 0) {
       log('Install failed')
       writeState(buildId, { status: 'error', error: 'install failed' })
@@ -289,7 +320,7 @@ async function runBuildAsync(params: BuildParams, buildDir: string, logPath: str
 
     // Build
     log(`Running ${buildCommand}...`)
-    const buildResult = await runAsync(buildCommand!, workingDir, logPath, 'build')
+    const buildResult = await runAsync(buildCommand!, workingDir, logPath, 'build', projectEnv, redactor)
     if (buildResult.exitCode !== 0) {
       log('Build failed')
       writeState(buildId, { status: 'error', error: 'build failed' })
