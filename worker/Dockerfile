@@ -65,6 +65,13 @@ RUN curl -sSfL \
 # Copy walrus-deploy script
 COPY walrus-deploy/walrus-deploy /usr/local/bin/walrus-deploy
 RUN chmod +x /usr/local/bin/walrus-deploy
+RUN if grep -q 'SB_ARGS+=(--gas-budget' /usr/local/bin/walrus-deploy; then \
+      echo "walrus-deploy still passes --gas-budget to site-builder deploy" >&2; \
+      exit 1; \
+    fi && \
+    mkdir -p /etc/glacier && \
+    sha256sum /usr/local/bin/walrus-deploy > /etc/glacier/walrus-deploy.sha256 && \
+    printf '%s\n' 'site-builder-2.9-gas-budget-config' > /etc/glacier/deployer-compat.txt
 
 # Set up default walrus-deploy config path
 ENV WALRUS_CONFIG=/etc/walrus/sites-config-mainnet.yaml

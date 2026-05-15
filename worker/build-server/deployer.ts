@@ -67,6 +67,60 @@ function setupWallet(network: 'mainnet' | 'testnet', keystoreContent: string, su
   logs.push('Sui wallet configured')
 }
 
+function readOptionalText(path: string): string | null {
+  try {
+    return readFileSync(path, 'utf-8').trim() || null
+  } catch {
+    return null
+  }
+}
+
+function runtimeDeployInfo(): string[] {
+  const compat = readOptionalText('/etc/glacier/deployer-compat.txt')
+  const walrusDeploySha = readOptionalText('/etc/glacier/walrus-deploy.sha256')?.split(/\s+/)[0]
+  const info = ['Glacier deployer: site-builder-2.9-gas-budget-config']
+  if (compat && compat !== 'site-builder-2.9-gas-budget-config') {
+    info.push(`Container deployer compat: ${compat}`)
+  }
+  if (walrusDeploySha) {
+    info.push(`walrus-deploy sha256: ${walrusDeploySha}`)
+  }
+  return info
+}
+
+function patchSitesConfigContext(
+  content: string,
+  network: 'mainnet' | 'testnet',
+  patches: ReadonlyArray<readonly [string, string]>,
+): { content: string; missing: string[] } {
+  const lines = content.split('\n')
+  const contextStart = lines.findIndex((line) => new RegExp(`^\\s{2}${network}:\\s*$`).test(line))
+  if (contextStart === -1) {
+    return { content, missing: [`contexts.${network}`] }
+  }
+
+  let contextEnd = lines.length
+  for (let i = contextStart + 1; i < lines.length; i++) {
+    if (/^\s{2}\S.*:\s*$/.test(lines[i])) {
+      contextEnd = i
+      break
+    }
+  }
+
+  const missing = new Set(patches.map(([key]) => key))
+  for (let i = contextStart + 1; i < contextEnd; i++) {
+    for (const [key, value] of patches) {
+      const match = lines[i].match(new RegExp(`^(\\s*)#?\\s*${key}:\\s*.*$`))
+      if (match) {
+        lines[i] = `${match[1]}${key}: ${value}`
+        missing.delete(key)
+      }
+    }
+  }
+
+  return { content: lines.join('\n'), missing: [...missing] }
+}
+
 async function rpcCall<T>(url: string, method: string, params: unknown[]): Promise<T> {
   const resp = await fetch(url, {
     method: 'POST',
@@ -437,6 +491,7 @@ export async function deployToWalrus(params: DeployParams): Promise<DeployResult
   const { distPath, network, epochs = 'max', siteName, suiKeystore, suiAddress } = params
 
   log('--- Deploy ---')
+  for (const line of runtimeDeployInfo()) log(line)
 
   if (!existsSync(distPath)) {
     return { success: false, error: `dist path not found: ${distPath}`, logs }
@@ -495,18 +550,20 @@ export async function deployToWalrus(params: DeployParams): Promise<DeployResult
     // ── 5. Sites config: enable walrus_binary and walrus_config ──
     const originalSitesConfig = `/etc/walrus/sites-config-${network}.yaml`
     let sitesConfigContent = readFileSync(originalSitesConfig, 'utf-8')
-    sitesConfigContent = sitesConfigContent.replace(
-      /# walrus_binary:.*/,
-      `walrus_binary: '/usr/local/bin/walrus-${network}'`
-    )
-    sitesConfigContent = sitesConfigContent.replace(
-      /# walrus_config:.*/,
-      `walrus_config: '${walrusConfigPath}'`
-    )
-    sitesConfigContent = sitesConfigContent.replace(
-      /#\s*gas_budget:\s*\d+/g,
-      `gas_budget: ${gasBudgetMist}`,
-    )
+    const sitesConfigPatches = [
+      ['walrus_binary', `'/usr/local/bin/walrus-${network}'`],
+      ['walrus_config', `'${walrusConfigPath}'`],
+      ['gas_budget', gasBudgetMist.toString()],
+    ] as const
+    const patchedSitesConfig = patchSitesConfigContext(sitesConfigContent, network, sitesConfigPatches)
+    if (patchedSitesConfig.missing.length > 0) {
+      return {
+        success: false,
+        error: `sites-config template missing ${patchedSitesConfig.missing.join(', ')} for ${network}`,
+        logs,
+      }
+    }
+    sitesConfigContent = patchedSitesConfig.content
     tempSitesConfig = `/tmp/sites-config-${network}.yaml`
     writeFileSync(tempSitesConfig, sitesConfigContent, { mode: 0o600 })
     log('Sites config prepared')
