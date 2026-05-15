@@ -8,6 +8,7 @@ export interface DeployParams {
   network: 'mainnet' | 'testnet'
   epochs?: number | 'max'
   siteName?: string
+  existingObjectId?: string
   suiKeystore: string
   suiAddress: string
   logPath?: string
@@ -488,7 +489,7 @@ export async function deployToWalrus(params: DeployParams): Promise<DeployResult
     }
   }
 
-  const { distPath, network, epochs = 'max', siteName, suiKeystore, suiAddress } = params
+  const { distPath, network, epochs = 'max', siteName, existingObjectId, suiKeystore, suiAddress } = params
 
   log('--- Deploy ---')
   for (const line of runtimeDeployInfo()) log(line)
@@ -585,6 +586,7 @@ export async function deployToWalrus(params: DeployParams): Promise<DeployResult
     cmd += ` --network "${network}"`
     cmd += ` --epochs "${epochs}"`
     if (siteName) cmd += ` --site-name "${siteName}"`
+    if (existingObjectId) cmd += ` --object-id "${existingObjectId}"`
     cmd += ` --config "${tempSitesConfig}"`
 
     log(`Running: ${cmd}`)

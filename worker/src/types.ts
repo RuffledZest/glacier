@@ -79,6 +79,7 @@ export interface DeployCommand {
   network: 'mainnet' | 'testnet'
   epochs?: number | 'max'
   siteName?: string
+  existingObjectId?: string
   suiKeystore: string
   suiAddress: string
   buildId?: string

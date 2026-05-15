@@ -86,6 +86,28 @@ async function finalizeDeploymentFromContainer(
   }
 }
 
+async function findExistingSiteObjectId(
+  db: D1Database,
+  deploymentId: string,
+  repoUrl: string,
+  network: 'mainnet' | 'testnet',
+  baseDir: string,
+): Promise<string | undefined> {
+  const current = await getDeployment(db, deploymentId)
+  if (!current) return undefined
+
+  const deployments = await getDeploymentsByRepo(db, current.userAddress, repoUrl)
+  const existing = deployments.find((d) =>
+    d.id !== deploymentId &&
+    d.status === 'deployed' &&
+    d.network === network &&
+    d.baseDir === baseDir &&
+    !!d.objectId
+  )
+
+  return existing?.objectId || undefined
+}
+
 router.post('/deploy', async (c) => {
   const db = getDb(c)
 
@@ -659,6 +681,7 @@ async function runBuildAndDeploy(
 
     // Phase 3: Deploy
     await updateDeployment(db, deploymentId, { status: 'deploying' })
+    const existingObjectId = await findExistingSiteObjectId(db, deploymentId, repoUrl, network, baseDir)
 
     // Ensure container is still running before deploy (it may have shut down after build)
     await container.startAndWaitForPorts({
@@ -670,6 +693,7 @@ async function runBuildAndDeploy(
       network,
       epochs,
       siteName,
+      existingObjectId,
       suiKeystore: (env.SUI_KEYSTORE as string) || '',
       suiAddress: (env.SUI_ADDRESS as string) || '',
       buildId: deploymentId,

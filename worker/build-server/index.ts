@@ -125,9 +125,9 @@ app.post('/deploy', async (c) => {
   try {
     const body = await c.req.json()
     const {
-      distPath, network = 'testnet', epochs = 'max', siteName, suiKeystore, suiAddress, buildId,
+      distPath, network = 'testnet', epochs = 'max', siteName, existingObjectId, suiKeystore, suiAddress, buildId,
     } = body as {
-      distPath: string; network?: 'mainnet' | 'testnet'; epochs?: number | 'max'; siteName?: string; suiKeystore: string; suiAddress: string; buildId?: string
+      distPath: string; network?: 'mainnet' | 'testnet'; epochs?: number | 'max'; siteName?: string; existingObjectId?: string; suiKeystore: string; suiAddress: string; buildId?: string
     }
     if (!distPath) return c.json({ success: false, error: 'distPath required', logs: [] }, 400)
     if (!suiKeystore || !suiAddress) return c.json({ success: false, error: 'wallet credentials required', logs: [] }, 400)
@@ -135,7 +135,7 @@ app.post('/deploy', async (c) => {
     if (buildId) {
       writeState(buildId, { status: 'running', phase: 'deploy', distPath })
     }
-    const result = await deployToWalrus({ distPath, network: network as 'mainnet' | 'testnet', epochs, siteName, suiKeystore, suiAddress, logPath })
+    const result = await deployToWalrus({ distPath, network: network as 'mainnet' | 'testnet', epochs, siteName, existingObjectId, suiKeystore, suiAddress, logPath })
     if (buildId) {
       writeState(buildId, {
         status: result.success ? 'done' : 'error',
