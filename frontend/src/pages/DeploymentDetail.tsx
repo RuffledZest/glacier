@@ -281,9 +281,22 @@ export default function DeploymentDetail() {
                 </div>
               )}
             </div>
-            <div className="flex-1 p-4 overflow-x-auto overflow-y-auto max-h-[600px] font-mono text-sm leading-relaxed scrollbar-thin scrollbar-thumb-border scrollbar-track-transparent">
-              <LogPre liveLogs={liveLogs} storedLogs={d.logs} />
-              <div ref={logsEndRef} className="h-4" />
+            <div className="flex-1 flex flex-col min-h-0">
+              {d.status === 'building' && (
+                <div className="mx-4 mt-4 mb-0 rounded-lg border border-border bg-surface/80 px-3 py-2 text-xs text-textMuted leading-relaxed">
+                  Vite may print a green “modules transformed” line before chunking and minify finish — that is not the end of the build.
+                  Logs can pause for a while; <span className="text-white/90">Updated at</span> should still advance while the worker is polling.
+                </div>
+              )}
+              {d.status === 'deploying' && (
+                <div className="mx-4 mt-4 mb-0 rounded-lg border border-border bg-surface/80 px-3 py-2 text-xs text-textMuted leading-relaxed">
+                  Publishing to Walrus can take several minutes. <span className="text-white/90">Updated at</span> should advance periodically while the deploy runs.
+                </div>
+              )}
+              <div className="flex-1 p-4 overflow-x-auto overflow-y-auto max-h-[600px] font-mono text-sm leading-relaxed scrollbar-thin scrollbar-thumb-border scrollbar-track-transparent">
+                <LogPre liveLogs={liveLogs} storedLogs={d.logs} />
+                <div ref={logsEndRef} className="h-4" />
+              </div>
             </div>
           </Card>
         </div>

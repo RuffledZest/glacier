@@ -74,7 +74,8 @@ function childEnv(phase: 'clone' | 'install' | 'build'): NodeJS.ProcessEnv {
     return base
   }
   if (phase === 'build') {
-    return { ...base, NODE_ENV: 'production' }
+    // CI encourages line-oriented tool output (npm/vite) so logs flush during long bundle steps.
+    return { ...base, NODE_ENV: 'production', CI: 'true' }
   }
   return base
 }

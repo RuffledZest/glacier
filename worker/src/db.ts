@@ -157,6 +157,14 @@ export async function createDeployment(
     .run()
 }
 
+/** Touch `updated_at` only (heartbeat while build/deploy is still running). */
+export async function touchDeployment(db: D1Database, id: string): Promise<void> {
+  await db
+    .prepare(`UPDATE deployments SET updated_at = datetime('now') WHERE id = ?1`)
+    .bind(id)
+    .run()
+}
+
 export async function updateDeployment(
   db: D1Database,
   id: string,

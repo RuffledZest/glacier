@@ -1,7 +1,8 @@
 import { Hono } from 'hono'
 import { getContainer } from '@cloudflare/containers'
 import type { Env } from '..'
-import { createDeployment, updateDeployment, getDeployment, getDb, upsertProject } from '../db'
+import { timedContainerFetch } from '../container-fetch'
+import { createDeployment, updateDeployment, touchDeployment, getDeployment, getDb, upsertProject } from '../db'
 import type { BuildRequest, DeployCommand } from '../types'
 import { detectFromGithubApi } from '../auto-detect'
 
@@ -157,12 +158,13 @@ router.post('/github', async (c) => {
           buildId: deploymentId,
         }
 
-        const startResp = await container.fetch(
+        const startResp = await timedContainerFetch(
+          container,
           new Request('http://localhost/build', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(buildReq),
-          })
+          }),
         )
 
         if (!startResp.ok) {
@@ -189,8 +191,13 @@ router.post('/github', async (c) => {
         while (pollCount < 300) {
           pollCount++
           await new Promise((r) => setTimeout(r, 2000))
+          if (pollCount % 3 === 0) {
+            try {
+              await touchDeployment(db, deploymentId)
+            } catch { /* ignore */ }
+          }
           try {
-            const logResp = await container.fetch(new Request(`http://localhost/logs/${buildId}`))
+            const logResp = await timedContainerFetch(container, new Request(`http://localhost/logs/${buildId}`))
             if (logResp.ok) {
               const logData = await logResp.json() as { logs: string }
               if (logData.logs && logData.logs.length > lastLogLen) {
@@ -200,12 +207,12 @@ router.post('/github', async (c) => {
             }
           } catch {}
           try {
-            const statusResp = await container.fetch(new Request(`http://localhost/status/${buildId}`))
+            const statusResp = await timedContainerFetch(container, new Request(`http://localhost/status/${buildId}`))
             if (statusResp.ok) {
               const state = await statusResp.json() as { status: string; distPath?: string; error?: string }
               if (state.status === 'done' && state.distPath) { distPath = state.distPath; break }
               if (state.status === 'error') {
-                const lr = await container.fetch(new Request(`http://localhost/logs/${buildId}`))
+                const lr = await timedContainerFetch(container, new Request(`http://localhost/logs/${buildId}`))
                 let logs = ''; if (lr.ok) { const d = await lr.json() as { logs: string }; logs = d.logs }
                 await updateDeployment(db, deploymentId, { status: 'failed', error: state.error || 'build failed', logs })
                 return
@@ -236,12 +243,14 @@ router.post('/github', async (c) => {
           buildId: deploymentId,
         }
 
-        const deployResponse = await container.fetch(
+        const deployResponse = await timedContainerFetch(
+          container,
           new Request('http://localhost/deploy', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(deployCmd),
-          })
+          }),
+          0,
         )
 
         if (!deployResponse.ok) {

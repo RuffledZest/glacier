@@ -2,7 +2,20 @@ import { Hono } from 'hono'
 import { getContainer } from '@cloudflare/containers'
 import type { Env } from '..'
 import { verifyJwt } from '../auth'
-import { createDeployment, updateDeployment, getDeployment, getDeployments, getDb, upsertProject, getProjects, getProject, deleteProject, getDeploymentsByRepo } from '../db'
+import { timedContainerFetch } from '../container-fetch'
+import {
+  createDeployment,
+  updateDeployment,
+  touchDeployment,
+  getDeployment,
+  getDeployments,
+  getDb,
+  upsertProject,
+  getProjects,
+  getProject,
+  deleteProject,
+  getDeploymentsByRepo,
+} from '../db'
 import type { DeployRequest, BuildRequest, DeployCommand } from '../types'
 import { detectFromGithubApi } from '../auto-detect'
 import { resolveMainnetEpochs, resolveTestnetEpochs } from '../epochs'
@@ -251,8 +264,10 @@ router.get('/deployments/:id/logs', async (c) => {
     const container = getContainer(c.env.BUILD_CONTAINER, id)
     await container.startAndWaitForPorts({ cancellationOptions: { portReadyTimeoutMS: 10000 } })
 
-    const sseResp = await container.fetch(
-      new Request('http://localhost/stream-logs/' + encodeURIComponent(id))
+    const sseResp = await timedContainerFetch(
+      container,
+      new Request('http://localhost/stream-logs/' + encodeURIComponent(id)),
+      0,
     )
 
     if (!sseResp.ok || !sseResp.body) {
@@ -448,12 +463,13 @@ async function runBuildAndDeploy(
       buildId: deploymentId,
     }
 
-    const startResp = await container.fetch(
+    const startResp = await timedContainerFetch(
+      container,
       new Request('http://localhost/build', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(buildReq),
-      })
+      }),
     )
 
     if (!startResp.ok) {
@@ -485,9 +501,16 @@ async function runBuildAndDeploy(
       pollCount++
       await new Promise((r) => setTimeout(r, 2000))
 
+      // Heartbeat so Updated At / UI show the worker is still polling (Vite may not print for a long time).
+      if (pollCount % 3 === 0) {
+        try {
+          await touchDeployment(db, deploymentId)
+        } catch { /* ignore */ }
+      }
+
       // Fetch latest logs
       try {
-        const logResp = await container.fetch(new Request(`http://localhost/logs/${buildId}`))
+        const logResp = await timedContainerFetch(container, new Request(`http://localhost/logs/${buildId}`))
         if (logResp.ok) {
           const logData = await logResp.json() as { logs: string }
           if (logData.logs && logData.logs.length > lastLogLen) {
@@ -499,12 +522,12 @@ async function runBuildAndDeploy(
 
       // Check build status
       try {
-        const statusResp = await container.fetch(new Request(`http://localhost/status/${buildId}`))
+        const statusResp = await timedContainerFetch(container, new Request(`http://localhost/status/${buildId}`))
         if (statusResp.ok) {
           const state = await statusResp.json() as { status: string; distPath?: string; error?: string }
           if (state.status === 'done' && state.distPath) {
             // Update logs one final time
-            const finalLogResp = await container.fetch(new Request(`http://localhost/logs/${buildId}`))
+            const finalLogResp = await timedContainerFetch(container, new Request(`http://localhost/logs/${buildId}`))
             if (finalLogResp.ok) {
               const finalLogData = await finalLogResp.json() as { logs: string }
               if (finalLogData.logs) await updateDeployment(db, deploymentId, { logs: finalLogData.logs })
@@ -514,7 +537,7 @@ async function runBuildAndDeploy(
             break
           }
           if (state.status === 'error') {
-            const logResp = await container.fetch(new Request(`http://localhost/logs/${buildId}`))
+            const logResp = await timedContainerFetch(container, new Request(`http://localhost/logs/${buildId}`))
             let logs = ''
             if (logResp.ok) { const d = await logResp.json() as { logs: string }; logs = d.logs }
             await updateDeployment(db, deploymentId, { status: 'failed', error: state.error || 'build failed', logs })
@@ -525,7 +548,7 @@ async function runBuildAndDeploy(
     }
 
     // Get current state after polling loop
-    const finalStatusResp = await container.fetch(new Request(`http://localhost/status/${buildId}`))
+    const finalStatusResp = await timedContainerFetch(container, new Request(`http://localhost/status/${buildId}`))
     if (!finalStatusResp.ok) {
       await updateDeployment(db, deploymentId, { status: 'failed', error: 'build status check failed' })
       return
@@ -562,7 +585,7 @@ async function runBuildAndDeploy(
     let deployLogLen = 0
     const logPollInterval = setInterval(async () => {
       try {
-        const logResp = await container.fetch(new Request(`http://localhost/logs/${deploymentId}`))
+        const logResp = await timedContainerFetch(container, new Request(`http://localhost/logs/${deploymentId}`))
         if (logResp.ok) {
           const logData = await logResp.json() as { logs: string }
           if (logData.logs && logData.logs.length > deployLogLen) {
@@ -573,19 +596,30 @@ async function runBuildAndDeploy(
       } catch { /* ignore poll errors */ }
     }, 3000)
 
+    const deployHeartbeat = setInterval(() => {
+      void touchDeployment(db, deploymentId)
+    }, 8000)
+
+    const clearDeployPollers = () => {
+      clearInterval(logPollInterval)
+      clearInterval(deployHeartbeat)
+    }
+
     let deployResult: { success: boolean; objectId?: string; base36Url?: string; error?: string; logs?: string[] }
     try {
-      const deployResponse = await container.fetch(
+      const deployResponse = await timedContainerFetch(
+        container,
         new Request('http://localhost/deploy', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(deployCmd),
-        })
+        }),
+        0,
       )
 
       if (!deployResponse.ok) {
         const text = await deployResponse.text().catch(() => '')
-        clearInterval(logPollInterval)
+        clearDeployPollers()
         await updateDeployment(db, deploymentId, {
           status: 'failed',
           error: `container deploy returned ${deployResponse.status}: ${text.slice(0, 500)}`,
@@ -597,7 +631,7 @@ async function runBuildAndDeploy(
         deployResult = await deployResponse.json()
       } catch {
         const text = await deployResponse.clone().text().catch(() => 'unknown')
-        clearInterval(logPollInterval)
+        clearDeployPollers()
         await updateDeployment(db, deploymentId, {
           status: 'failed',
           error: `invalid JSON from container deploy: ${text.slice(0, 500)}`,
@@ -605,7 +639,7 @@ async function runBuildAndDeploy(
         return
       }
     } catch (fetchErr) {
-      clearInterval(logPollInterval)
+      clearDeployPollers()
       const errMsg = fetchErr instanceof Error ? fetchErr.message : 'deploy fetch failed'
       await updateDeployment(db, deploymentId, {
         status: 'failed',
@@ -614,11 +648,11 @@ async function runBuildAndDeploy(
       return
     }
 
-    clearInterval(logPollInterval)
+    clearDeployPollers()
 
     // Final log sync
     try {
-      const finalLogResp = await container.fetch(new Request(`http://localhost/logs/${deploymentId}`))
+      const finalLogResp = await timedContainerFetch(container, new Request(`http://localhost/logs/${deploymentId}`))
       if (finalLogResp.ok) {
         const finalLogData = await finalLogResp.json() as { logs: string }
         if (finalLogData.logs) await updateDeployment(db, deploymentId, { logs: finalLogData.logs })
