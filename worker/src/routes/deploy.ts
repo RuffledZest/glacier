@@ -42,7 +42,9 @@ const router = new Hono<{ Bindings: Env }>()
 type ContainerDeployState = {
   status?: 'pending' | 'running' | 'done' | 'error'
   phase?: 'build' | 'deploy'
+  distPath?: string
   error?: string
+  detectedConfig?: { outputDir?: string }
   deployResult?: Omit<DeployResult, 'logs'>
 }
 
@@ -182,8 +184,9 @@ async function finalizeDeploymentFromContainer(
   env: Env,
   db: D1Database,
   deployment: Deployment,
+  executionCtx?: { waitUntil(promise: Promise<unknown>): void },
 ): Promise<Deployment> {
-  if (deployment.status !== 'deploying') return deployment
+  if (!['building', 'built', 'deploying'].includes(deployment.status)) return deployment
 
   try {
     const container = getContainer(env.BUILD_CONTAINER, deployment.id)
@@ -193,7 +196,6 @@ async function finalizeDeploymentFromContainer(
     if (!statusResp.ok) return deployment
 
     const state = await statusResp.json() as ContainerDeployState
-    if (state.phase !== 'deploy') return deployment
 
     const logResp = await timedContainerFetch(container, new Request(`http://localhost/logs/${deployment.id}`), 10000)
     let logs = deployment.logs
@@ -201,6 +203,44 @@ async function finalizeDeploymentFromContainer(
       const logData = await logResp.json() as { logs?: string }
       logs = preferLatestLogs(deployment.logs, logData.logs || '')
     }
+
+    if (state.phase === 'build') {
+      if (state.status === 'done' && state.distPath) {
+        const builtOutput =
+          state.detectedConfig?.outputDir ??
+          coerceRelativeOutputDir(state.distPath, deployment.baseDir || '.') ??
+          deployment.outputDir ??
+          'dist'
+        await updateDeployment(db, deployment.id, { status: 'deploying', outputDir: builtOutput, logs })
+        const epochs =
+          deployment.epochs ??
+          (deployment.network === 'mainnet' ? 2 : resolveTestnetEpochs(undefined))
+        executionCtx?.waitUntil(
+          deployBuiltArtifact(env, db, {
+            deploymentId: deployment.id,
+            repoUrl: deployment.repoUrl,
+            baseDir: deployment.baseDir || '.',
+            network: deployment.network,
+            epochs,
+            distPath: state.distPath,
+          })
+        )
+        return (await getDeployment(db, deployment.id)) || deployment
+      }
+
+      if (state.status === 'error') {
+        await updateDeployment(db, deployment.id, {
+          status: 'failed',
+          error: state.error || 'build failed',
+          logs,
+        })
+        return (await getDeployment(db, deployment.id)) || deployment
+      }
+
+      return deployment
+    }
+
+    if (state.phase !== 'deploy') return deployment
 
     if (state.deployResult?.success) {
       await updateDeployment(db, deployment.id, {
@@ -409,7 +449,7 @@ router.get('/deployments/:id', async (c) => {
     return c.json({ error: 'not authorized' }, 403)
   }
 
-  deployment = await finalizeDeploymentFromContainer(c.env, db, deployment)
+  deployment = await finalizeDeploymentFromContainer(c.env, db, deployment, c.executionCtx)
 
   return c.json(deployment)
 })
@@ -641,7 +681,7 @@ router.get('/deployments/:id/logs', async (c) => {
     return c.json({ error: 'not found' }, 404)
   }
 
-  deployment = await finalizeDeploymentFromContainer(c.env, db, deployment)
+  deployment = await finalizeDeploymentFromContainer(c.env, db, deployment, c.executionCtx)
 
   // If build is not active, serve logs from D1
   if (!['building', 'deploying'].includes(deployment.status)) {
@@ -1030,6 +1070,148 @@ router.delete('/deployments/:id', async (c) => {
   return c.json({ ok: true })
 })
 
+async function deployBuiltArtifact(
+  env: Env,
+  db: D1Database,
+  input: {
+    deploymentId: string
+    repoUrl: string
+    baseDir: string
+    network: 'mainnet' | 'testnet'
+    epochs: number
+    distPath: string
+    siteName?: string
+  },
+): Promise<void> {
+  const { deploymentId, repoUrl, baseDir, network, epochs, distPath, siteName } = input
+
+  try {
+    await updateDeployment(db, deploymentId, { status: 'deploying' })
+    const existingObjectId = await findExistingSiteObjectId(db, deploymentId, repoUrl, network, baseDir)
+    const container = getContainer(env.BUILD_CONTAINER, deploymentId)
+
+    await container.startAndWaitForPorts({
+      cancellationOptions: { portReadyTimeoutMS: 30000 },
+    })
+
+    const deployCmd: DeployCommand = {
+      distPath,
+      network,
+      epochs,
+      siteName,
+      existingObjectId,
+      suiKeystore: (env.SUI_KEYSTORE as string) || '',
+      suiAddress: (env.SUI_ADDRESS as string) || '',
+      buildId: deploymentId,
+    }
+
+    let deployLogLen = 0
+    const logPollInterval = setInterval(async () => {
+      try {
+        const logResp = await timedContainerFetch(container, new Request(`http://localhost/logs/${deploymentId}`))
+        if (logResp.ok) {
+          const logData = await logResp.json() as { logs: string }
+          if (logData.logs && logData.logs.length > deployLogLen) {
+            await updateDeployment(db, deploymentId, { logs: logData.logs })
+            deployLogLen = logData.logs.length
+          }
+        }
+      } catch { /* ignore poll errors */ }
+    }, 3000)
+
+    const deployHeartbeat = setInterval(() => {
+      void touchDeployment(db, deploymentId)
+    }, 8000)
+
+    const clearDeployPollers = () => {
+      clearInterval(logPollInterval)
+      clearInterval(deployHeartbeat)
+    }
+
+    let deployResult: { success: boolean; objectId?: string; base36Url?: string; error?: string; logs?: string[] }
+    try {
+      const deployResponse = await timedContainerFetch(
+        container,
+        new Request('http://localhost/deploy', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(deployCmd),
+        }),
+        0,
+      )
+
+      if (!deployResponse.ok) {
+        const text = await deployResponse.text().catch(() => '')
+        clearDeployPollers()
+        await updateDeployment(db, deploymentId, {
+          status: 'failed',
+          error: `container deploy returned ${deployResponse.status}: ${text.slice(0, 500)}`,
+        })
+        return
+      }
+
+      try {
+        deployResult = await deployResponse.json()
+      } catch {
+        const text = await deployResponse.clone().text().catch(() => 'unknown')
+        clearDeployPollers()
+        await updateDeployment(db, deploymentId, {
+          status: 'failed',
+          error: `invalid JSON from container deploy: ${text.slice(0, 500)}`,
+        })
+        return
+      }
+    } catch (fetchErr) {
+      clearDeployPollers()
+      const errMsg = fetchErr instanceof Error ? fetchErr.message : 'deploy fetch failed'
+      await updateDeployment(db, deploymentId, {
+        status: 'failed',
+        error: `Deploy connection failed: ${errMsg}. The deployment may have been too large or timed out.`,
+      })
+      return
+    }
+
+    clearDeployPollers()
+
+    try {
+      const finalLogResp = await timedContainerFetch(container, new Request(`http://localhost/logs/${deploymentId}`))
+      if (finalLogResp.ok) {
+        const finalLogData = await finalLogResp.json() as { logs: string }
+        if (finalLogData.logs) await updateDeployment(db, deploymentId, { logs: finalLogData.logs })
+      }
+    } catch { /* ignore */ }
+
+    if (!deployResult.success) {
+      const current = await getDeployment(db, deploymentId)
+      const deployLogs = Array.isArray(deployResult.logs) ? deployResult.logs.join('\n') : String(deployResult.logs || '')
+      const combinedLogs = preferLatestLogs(current?.logs || '', deployLogs)
+      await updateDeployment(db, deploymentId, {
+        status: 'failed',
+        error: deployResult.error || 'deploy failed',
+        logs: combinedLogs,
+      })
+      return
+    }
+
+    const current = await getDeployment(db, deploymentId)
+    const deployLogs = Array.isArray(deployResult.logs) ? deployResult.logs.join('\n') : String(deployResult.logs || '')
+    const combinedLogs = preferLatestLogs(current?.logs || '', deployLogs)
+    await updateDeployment(db, deploymentId, {
+      status: 'deployed',
+      objectId: deployResult.objectId || null,
+      base36Url: deployResult.base36Url || null,
+      logs: combinedLogs,
+      epochs,
+    })
+  } catch (err) {
+    const errorMessage = err instanceof Error ? err.message : 'unknown error'
+    await updateDeployment(db, deploymentId, {
+      status: 'failed',
+      error: errorMessage,
+    })
+  }
+}
+
 async function runBuildAndDeploy(
   env: Env,
   db: D1Database,
@@ -1185,125 +1367,14 @@ async function runBuildAndDeploy(
     const distPath = finalState.distPath
     await updateDeployment(db, deploymentId, { status: 'built' })
 
-    // Phase 3: Deploy
-    await updateDeployment(db, deploymentId, { status: 'deploying' })
-    const existingObjectId = await findExistingSiteObjectId(db, deploymentId, repoUrl, network, baseDir)
-
-    // Ensure container is still running before deploy (it may have shut down after build)
-    await container.startAndWaitForPorts({
-      cancellationOptions: { portReadyTimeoutMS: 30000 },
-    })
-
-    const deployCmd: DeployCommand = {
-      distPath,
+    await deployBuiltArtifact(env, db, {
+      deploymentId,
+      repoUrl,
+      baseDir,
       network,
       epochs,
+      distPath,
       siteName,
-      existingObjectId,
-      suiKeystore: (env.SUI_KEYSTORE as string) || '',
-      suiAddress: (env.SUI_ADDRESS as string) || '',
-      buildId: deploymentId,
-    }
-
-    // Poll deploy logs in background so frontend sees live updates
-    let deployLogLen = 0
-    const logPollInterval = setInterval(async () => {
-      try {
-        const logResp = await timedContainerFetch(container, new Request(`http://localhost/logs/${deploymentId}`))
-        if (logResp.ok) {
-          const logData = await logResp.json() as { logs: string }
-          if (logData.logs && logData.logs.length > deployLogLen) {
-            await updateDeployment(db, deploymentId, { logs: logData.logs })
-            deployLogLen = logData.logs.length
-          }
-        }
-      } catch { /* ignore poll errors */ }
-    }, 3000)
-
-    const deployHeartbeat = setInterval(() => {
-      void touchDeployment(db, deploymentId)
-    }, 8000)
-
-    const clearDeployPollers = () => {
-      clearInterval(logPollInterval)
-      clearInterval(deployHeartbeat)
-    }
-
-    let deployResult: { success: boolean; objectId?: string; base36Url?: string; error?: string; logs?: string[] }
-    try {
-      const deployResponse = await timedContainerFetch(
-        container,
-        new Request('http://localhost/deploy', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(deployCmd),
-        }),
-        0,
-      )
-
-      if (!deployResponse.ok) {
-        const text = await deployResponse.text().catch(() => '')
-        clearDeployPollers()
-        await updateDeployment(db, deploymentId, {
-          status: 'failed',
-          error: `container deploy returned ${deployResponse.status}: ${text.slice(0, 500)}`,
-        })
-        return
-      }
-
-      try {
-        deployResult = await deployResponse.json()
-      } catch {
-        const text = await deployResponse.clone().text().catch(() => 'unknown')
-        clearDeployPollers()
-        await updateDeployment(db, deploymentId, {
-          status: 'failed',
-          error: `invalid JSON from container deploy: ${text.slice(0, 500)}`,
-        })
-        return
-      }
-    } catch (fetchErr) {
-      clearDeployPollers()
-      const errMsg = fetchErr instanceof Error ? fetchErr.message : 'deploy fetch failed'
-      await updateDeployment(db, deploymentId, {
-        status: 'failed',
-        error: `Deploy connection failed: ${errMsg}. The deployment may have been too large or timed out.`,
-      })
-      return
-    }
-
-    clearDeployPollers()
-
-    // Final log sync
-    try {
-      const finalLogResp = await timedContainerFetch(container, new Request(`http://localhost/logs/${deploymentId}`))
-      if (finalLogResp.ok) {
-        const finalLogData = await finalLogResp.json() as { logs: string }
-        if (finalLogData.logs) await updateDeployment(db, deploymentId, { logs: finalLogData.logs })
-      }
-    } catch { /* ignore */ }
-
-    if (!deployResult.success) {
-      const current = await getDeployment(db, deploymentId)
-      const deployLogs = Array.isArray(deployResult.logs) ? deployResult.logs.join('\n') : String(deployResult.logs || '')
-      const combinedLogs = preferLatestLogs(current?.logs || '', deployLogs)
-      await updateDeployment(db, deploymentId, {
-        status: 'failed',
-        error: deployResult.error || 'deploy failed',
-        logs: combinedLogs,
-      })
-      return
-    }
-
-    const current = await getDeployment(db, deploymentId)
-    const deployLogs = Array.isArray(deployResult.logs) ? deployResult.logs.join('\n') : String(deployResult.logs || '')
-    const combinedLogs = preferLatestLogs(current?.logs || '', deployLogs)
-    await updateDeployment(db, deploymentId, {
-      status: 'deployed',
-      objectId: deployResult.objectId || null,
-      base36Url: deployResult.base36Url || null,
-      logs: combinedLogs,
-      epochs,
     })
   } catch (err) {
     const errorMessage = err instanceof Error ? err.message : 'unknown error'
