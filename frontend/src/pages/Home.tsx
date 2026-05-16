@@ -22,7 +22,7 @@ export default function Home() {
 
       {/* Foreground glacier layer (z-20) with slide-up animation */}
       <div
-        className="absolute bottom-[-5%] left-0 right-0 h-[70%] md:h-[90%] z-20 bg-cover bg-top bg-no-repeat pointer-events-none animate-glacier-slide-up"
+        className="absolute bottom-[-5%] left-0 right-0 h-[70%] md:h-[95%] z-20 bg-cover bg-top bg-no-repeat pointer-events-none animate-glacier-slide-up"
         style={{ backgroundImage: 'url("/GlacierNoBg.png")' }}
       ></div>
 
