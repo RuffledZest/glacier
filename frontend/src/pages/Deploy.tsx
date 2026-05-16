@@ -52,7 +52,7 @@ const RESERVED_ENV_NAMES = new Set([
   'GITHUB_TOKEN', 'SUI_KEYSTORE', 'SUI_ADDRESS', 'SECRETS_ENCRYPTION_KEY', 'JWT_SECRET',
   'GITHUB_CLIENT_SECRET', 'WEBHOOK_SECRET', 'WALRUS_NETWORK', 'WALRUS_EPOCHS',
 ])
-const RESERVED_ENV_PREFIXES = ['SUI_', 'CF_', 'CLOUDFLARE_', 'WRANGLER_', 'GLACIER_']
+const RESERVED_ENV_PREFIXES = ['SUI_', 'CF_', 'CLOUDFLARE_', 'WRANGLER_', 'POLAR_']
 
 function parseEnvText(content: string): Record<string, string> {
   const result: Record<string, string> = {}

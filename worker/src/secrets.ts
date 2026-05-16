@@ -28,7 +28,7 @@ const RESERVED_NAMES = new Set([
   'WALRUS_EPOCHS',
   'WALRUS_GAS_BUDGET_MIST',
 ])
-const RESERVED_PREFIXES = ['SUI_', 'CF_', 'CLOUDFLARE_', 'WRANGLER_', 'GLACIER_']
+const RESERVED_PREFIXES = ['SUI_', 'CF_', 'CLOUDFLARE_', 'WRANGLER_', 'POLAR_']
 
 const textEncoder = new TextEncoder()
 const textDecoder = new TextDecoder()

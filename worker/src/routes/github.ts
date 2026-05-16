@@ -71,7 +71,7 @@ router.get('/callback', async (c) => {
     if (!frontend) {
       return c.json({ error: 'FRONTEND_URL is not configured' }, 500)
     }
-    return c.redirect(`${frontend}/deploy#${fragment}`)
+    return c.redirect(`${frontend}/dashboard#${fragment}`)
   }
 
   const code = c.req.query('code')
@@ -290,7 +290,7 @@ router.get('/repos/:owner/:repo/branches', async (c) => {
       headers: {
         Authorization: `Bearer ${row.access_token}`,
         Accept: 'application/vnd.github.v3+json',
-        'User-Agent': 'glacier',
+        'User-Agent': 'polar',
       },
     }
   )

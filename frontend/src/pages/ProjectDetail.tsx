@@ -51,7 +51,7 @@ const RESERVED_SECRET_NAMES = new Set([
   'GITHUB_TOKEN', 'SUI_KEYSTORE', 'SUI_ADDRESS', 'SECRETS_ENCRYPTION_KEY', 'JWT_SECRET',
   'GITHUB_CLIENT_SECRET', 'WEBHOOK_SECRET', 'WALRUS_NETWORK', 'WALRUS_EPOCHS',
 ])
-const RESERVED_SECRET_PREFIXES = ['SUI_', 'CF_', 'CLOUDFLARE_', 'WRANGLER_', 'GLACIER_']
+const RESERVED_SECRET_PREFIXES = ['SUI_', 'CF_', 'CLOUDFLARE_', 'WRANGLER_', 'POLAR_']
 
 function validateSecretName(name: string): string | null {
   if (!SECRET_NAME_RE.test(name)) return 'Use letters, numbers, and underscores, starting with a letter or underscore.'

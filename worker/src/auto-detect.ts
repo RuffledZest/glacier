@@ -58,7 +58,7 @@ async function fetchGithubContents(repoUrl: string, branch: string, path = ''): 
   const response = await fetch(apiUrl, {
     headers: {
       'Accept': 'application/vnd.github.v3+json',
-      'User-Agent': 'glacier-worker',
+      'User-Agent': 'polar-worker',
     },
   })
 

@@ -35,7 +35,10 @@ export interface Env {
 const app = new Hono<{ Bindings: Env }>()
 
 app.use('*', cors({
-  origin: '*',
+  origin: (origin, c) => {
+    const frontend = c.env.FRONTEND_URL?.trim().replace(/\/+$/, '') || 'https://polar.wal.app'
+    return origin === frontend ? origin : null
+  },
   allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowHeaders: ['Content-Type', 'Authorization'],
 }))

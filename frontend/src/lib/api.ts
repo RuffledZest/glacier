@@ -1,15 +1,15 @@
 const API_BASE = import.meta.env.VITE_API_BASE || '/api'
 
 export function getToken(): string | null {
-  return localStorage.getItem('glacier_token')
+  return localStorage.getItem('polar_token')
 }
 
 export function setToken(token: string): void {
-  localStorage.setItem('glacier_token', token)
+  localStorage.setItem('polar_token', token)
 }
 
 export function clearToken(): void {
-  localStorage.removeItem('glacier_token')
+  localStorage.removeItem('polar_token')
 }
 
 async function authFetch(path: string, options: RequestInit = {}): Promise<Response> {

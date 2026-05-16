@@ -49,7 +49,7 @@
   "vars": {
     "WALRUS_NETWORK": "testnet",
     "WALRUS_EPOCHS": "1",
-    "FRONTEND_URL": "https://glacier-frontend.pages.dev",
+    "FRONTEND_URL": "https://polar.wal.app",
     "API_PUBLIC_URL": "https://glacier.construct-computer.workers.dev"
   }
 }

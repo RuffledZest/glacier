@@ -77,9 +77,9 @@ function readOptionalText(path: string): string | null {
 }
 
 function runtimeDeployInfo(): string[] {
-  const compat = readOptionalText('/etc/glacier/deployer-compat.txt')
-  const walrusDeploySha = readOptionalText('/etc/glacier/walrus-deploy.sha256')?.split(/\s+/)[0]
-  const info = ['Glacier deployer: site-builder-2.9-gas-budget-config']
+  const compat = readOptionalText('/etc/polar/deployer-compat.txt')
+  const walrusDeploySha = readOptionalText('/etc/polar/walrus-deploy.sha256')?.split(/\s+/)[0]
+  const info = ['Polar deployer: site-builder-2.9-gas-budget-config']
   if (compat && compat !== 'site-builder-2.9-gas-budget-config') {
     info.push(`Container deployer compat: ${compat}`)
   }

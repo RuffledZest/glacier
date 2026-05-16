@@ -21,7 +21,7 @@ export default function Layout({ children }: { children: ReactNode }) {
         <div className="flex items-center gap-8">
           <Link to="/" className="flex items-center gap-2 text-2xl font-bold text-text hover:text-white transition-colors">
             <Box className="w-8 h-8 text-primary" />
-            <span className="tracking-tight">Glacier</span>
+            <span className="tracking-tight">Polar</span>
           </Link>
 
           {isAuthenticated && (

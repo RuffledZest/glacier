@@ -33,23 +33,23 @@ export default function Home() {
         />
       </picture>
 
-      {/* Logo text - Layered behind glacier (z-10) */}
+      {/* Logo text - layered behind foreground ice (z-10) */}
       <div className="absolute top-[35%] left-1/2 -translate-x-1/2 w-full z-10 flex items-center justify-center select-none ">
         <span className="font-koulen text-[120px] sm:text-[180px] lg:text-[240px] leading-none text-white tracking-wider">P</span>
         <img src="/PolarSvg.svg" alt="Polar Logo" className="w-[90px] h-[90px] sm:w-[135px] sm:h-[135px] lg:w-[220px] lg:h-[220px] object-contain mx-1 sm:mx-2 drop-shadow-[0_0_15px_rgba(255,255,255,0.5)]" />
         <span className="font-koulen text-[120px] sm:text-[180px] lg:text-[240px] leading-none text-white tracking-wider">LAR</span>
       </div>
 
-      {/* Foreground glacier layer (z-20) with slide-up animation */}
+      {/* Foreground polar layer (z-20) with slide-up animation */}
       <img
-        src="/GlacierNoBg.png"
+        src="/PolarNoBg.png"
         alt=""
         aria-hidden="true"
         width={2462}
         height={1664}
         decoding="async"
         draggable={false}
-        className="absolute bottom-[-5%] left-0 right-0 z-20 h-[70%] w-full object-cover object-top pointer-events-none select-none md:h-[95%] animate-glacier-slide-up"
+        className="absolute bottom-[-5%] left-0 right-0 z-20 h-[70%] w-full object-cover object-top pointer-events-none select-none md:h-[95%] animate-polar-slide-up"
       />
 
       {/* Button - Moved to 85% from top (z-30) */}

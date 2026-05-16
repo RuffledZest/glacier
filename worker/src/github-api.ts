@@ -59,7 +59,7 @@ export async function exchangeCode(
     headers: {
       'Content-Type': 'application/json',
       'Accept': 'application/json',
-      'User-Agent': 'glacier',
+      'User-Agent': 'polar',
     },
     body: JSON.stringify({
       client_id: clientId,
@@ -87,7 +87,7 @@ export async function exchangeCode(
     headers: {
       Authorization: `Bearer ${data.access_token}`,
       Accept: 'application/vnd.github.v3+json',
-      'User-Agent': 'glacier',
+      'User-Agent': 'polar',
     },
   })
   if (!userResp.ok) {
@@ -114,7 +114,7 @@ async function ghFetch(token: string, path: string): Promise<Response> {
     headers: {
       Authorization: `Bearer ${token}`,
       Accept: 'application/vnd.github.v3+json',
-      'User-Agent': 'glacier',
+      'User-Agent': 'polar',
     },
   })
 }
