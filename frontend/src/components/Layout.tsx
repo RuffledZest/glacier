@@ -9,6 +9,11 @@ import { Button } from './ui/Button'
 export default function Layout({ children }: { children: ReactNode }) {
   const { isAuthenticated, githubLogin, logout, login, isConnecting } = useAuth()
   const navigate = useNavigate()
+  const location = useLocation()
+
+  if (location.pathname === '/') {
+    return <>{children}</>
+  }
 
   return (
     <div className="min-h-screen flex flex-col max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
