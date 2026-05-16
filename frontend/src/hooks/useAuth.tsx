@@ -12,6 +12,7 @@ import { getToken, setToken, clearToken, getGithubLoginUrl, fetchMe } from '../l
 type AuthContextValue = {
   isAuthenticated: boolean
   githubLogin: string | null
+  isCheckingProfile: boolean
   isConnecting: boolean
   error: string | null
   login: () => Promise<void>
@@ -23,6 +24,7 @@ const AuthContext = createContext<AuthContextValue | null>(null)
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [token, setTok] = useState<string | null>(() => getToken())
   const [githubLogin, setGithubLogin] = useState<string | null>(null)
+  const [isCheckingProfile, setIsCheckingProfile] = useState<boolean>(() => !!getToken())
   const [isConnecting, setIsConnecting] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -30,13 +32,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const t = getToken()
     if (!t) {
       setGithubLogin(null)
+      setIsCheckingProfile(false)
       return
     }
+    setIsCheckingProfile(true)
     try {
       const me = await fetchMe()
       setGithubLogin(me.github_login)
     } catch {
+      clearToken()
+      setTok(null)
       setGithubLogin(null)
+    } finally {
+      setIsCheckingProfile(false)
     }
   }, [])
 
@@ -47,6 +55,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const tokenFromHash = params.get('token')
     const err = params.get('error')
     if (tokenFromHash) {
+      setIsCheckingProfile(true)
       setToken(tokenFromHash)
       setTok(tokenFromHash)
       setError(null)
@@ -78,18 +87,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     clearToken()
     setTok(null)
     setGithubLogin(null)
+    setIsCheckingProfile(false)
   }, [])
 
   const value = useMemo<AuthContextValue>(
     () => ({
       isAuthenticated: !!token,
       githubLogin,
+      isCheckingProfile,
       isConnecting,
       error,
       login,
       logout,
     }),
-    [token, githubLogin, isConnecting, error, login, logout]
+    [token, githubLogin, isCheckingProfile, isConnecting, error, login, logout]
   )
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>

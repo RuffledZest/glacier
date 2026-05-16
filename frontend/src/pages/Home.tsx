@@ -1,17 +1,37 @@
-import { Link } from 'react-router-dom'
+import { useEffect } from 'react'
+import { Link, useNavigate } from 'react-router-dom'
 import { useAuth } from '../hooks/useAuth'
-import ButtonBg from '/ButtonBgPng.png'
+import ButtonBg from '/ButtonBgPng.webp'
 
 export default function Home() {
-  const { isAuthenticated, githubLogin, logout, login, isConnecting } = useAuth()
+  const navigate = useNavigate()
+  const { isAuthenticated, githubLogin, isCheckingProfile, login, isConnecting } = useAuth()
+  const isGithubConnected = isAuthenticated && !!githubLogin
+
+  useEffect(() => {
+    if (isGithubConnected && !isCheckingProfile) {
+      navigate('/dashboard', { replace: true })
+    }
+  }, [isGithubConnected, isCheckingProfile, navigate])
 
   return (
     <div className="relative w-full h-screen overflow-hidden bg-[#050B14]">
       {/* Background layer */}
-      <div
-        className="absolute inset-0 z-0 bg-cover bg-center bg-no-repeat"
-        style={{ backgroundImage: 'url("/BackgroundSkyAndBeam.png")' }}
-      ></div>
+      <picture className="absolute inset-0 z-0 block h-full w-full">
+        <source srcSet="/BackgroundSkyAndBeam.avif" type="image/avif" />
+        <source srcSet="/BackgroundSkyAndBeam.webp" type="image/webp" />
+        <img
+          src="/BackgroundSkyAndBeam.png"
+          alt=""
+          aria-hidden="true"
+          width={5808}
+          height={3740}
+          decoding="async"
+          fetchPriority="high"
+          draggable={false}
+          className="h-full w-full object-cover object-center select-none"
+        />
+      </picture>
 
       {/* Logo text - Layered behind glacier (z-10) */}
       <div className="absolute top-[35%] left-1/2 -translate-x-1/2 w-full z-10 flex items-center justify-center select-none ">
@@ -21,22 +41,28 @@ export default function Home() {
       </div>
 
       {/* Foreground glacier layer (z-20) with slide-up animation */}
-      <div
-        className="absolute bottom-[-5%] left-0 right-0 h-[70%] md:h-[95%] z-20 bg-cover bg-top bg-no-repeat pointer-events-none animate-glacier-slide-up"
-        style={{ backgroundImage: 'url("/GlacierNoBg.png")' }}
-      ></div>
+      <img
+        src="/GlacierNoBg.png"
+        alt=""
+        aria-hidden="true"
+        width={2462}
+        height={1664}
+        decoding="async"
+        draggable={false}
+        className="absolute bottom-[-5%] left-0 right-0 z-20 h-[70%] w-full object-cover object-top pointer-events-none select-none md:h-[95%] animate-glacier-slide-up"
+      />
 
       {/* Button - Moved to 85% from top (z-30) */}
       <div className="absolute top-[50vh] sm:top-[68vh] left-1/2 -translate-x-1/2 z-30">
-        {!isAuthenticated ? (
+        {!isGithubConnected ? (
           <button
             type="button"
             onClick={() => void login()}
-            disabled={isConnecting}
+            disabled={isConnecting || isCheckingProfile}
             className="relative group transition-all duration-300 hover:scale-105 active:scale-95 flex items-center justify-center px-9 sm:px-16 lg:px-24 py-12 sm:py-10 lg:py-12 font-normal text-lg sm:text-2xl md:text-3xl text-white drop-shadow-lg disabled:opacity-70 disabled:cursor-not-allowed"
             style={{ backgroundImage: `url(${ButtonBg})`, backgroundSize: "100%", backgroundRepeat: "no-repeat", backgroundPosition: "center" }}
           >
-            {isConnecting ? 'Redirecting…' : 'Connect Github'}
+            {isCheckingProfile ? 'Checking GitHub…' : isConnecting ? 'Redirecting…' : 'Connect GitHub'}
           </button>
         ) : (
           <Link to="/dashboard">
